@@ -91,7 +91,7 @@
             <button class="button" disabled>Download</button>
         {% endif %}
         <button class="button" type="button" id="github-btn">GitHub</button>
-        <button class="button" type="button" onclick="alert('Publish feature will be added in upcoming steps.')">Publish</button>
+        <a class="button" href="{% url 'session_publish_page' session.id %}" style="text-decoration:none;">Publish</a>
         {% if project %}
             <button class="button" type="button" id="run-btn">Run</button>
         {% else %}

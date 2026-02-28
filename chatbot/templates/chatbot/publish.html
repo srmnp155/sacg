@@ -1,0 +1,371 @@
+{% extends "chatbot/base.html" %}
+
+{% block title %}Publish{% endblock %}
+
+{% block extra_head %}
+<style>
+    .publish-shell {
+        border: 1px solid #ced6e4;
+        border-radius: 14px;
+        padding: 16px;
+        background: linear-gradient(140deg, rgba(255,255,255,0.78), rgba(232,242,255,0.66));
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    }
+
+    .top-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 14px;
+    }
+
+    .tab-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+
+    .tab-btn {
+        border: 1px solid #ced6e4;
+        border-radius: 999px;
+        padding: 8px 14px;
+        font-weight: 700;
+        cursor: pointer;
+        background: rgba(255, 255, 255, 0.65);
+    }
+
+    .tab-btn.active {
+        border-color: #cc4b22;
+        color: #cc4b22;
+        background: rgba(255, 255, 255, 0.95);
+    }
+
+    .panel {
+        display: none;
+        border: 1px solid #ced6e4;
+        border-radius: 12px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.8);
+    }
+
+    .panel.active {
+        display: block;
+    }
+
+    .field {
+        margin-bottom: 10px;
+    }
+
+    .field label {
+        display: block;
+        margin-bottom: 6px;
+        font-weight: 700;
+    }
+
+    .field input,
+    .field textarea {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ced6e4;
+        border-radius: 10px;
+        font-size: 0.95rem;
+        font-family: inherit;
+    }
+
+    .status {
+        margin-top: 8px;
+        font-size: 0.9rem;
+        color: #184879;
+        white-space: pre-wrap;
+    }
+
+    .grid-two {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+    }
+
+    @media (max-width: 900px) {
+        .grid-two {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="card publish-shell">
+    <h2 style="margin-top:0;">Publish - Session {{ session.id }}</h2>
+    <p style="margin:0 0 10px;color:#5c6b80;">
+        {% if project %}
+            Latest saved code: <strong>{{ project.project_name }}</strong>
+        {% else %}
+            No saved code found for this session yet.
+        {% endif %}
+    </p>
+
+    <div class="top-actions">
+        <a class="button" href="{% url 'chat_page' %}" style="text-decoration:none;">Back</a>
+        {% if download_url %}
+            <a class="button" href="{{ download_url }}" style="text-decoration:none;">Download</a>
+        {% else %}
+            <button class="button" type="button" disabled>Download</button>
+        {% endif %}
+        {% if test_url %}
+            <a class="button" href="{{ test_url }}" style="text-decoration:none;">Test</a>
+        {% else %}
+            <button class="button" type="button" disabled>Test</button>
+        {% endif %}
+        <button class="button" type="button" id="github-btn" {% if not project %}disabled{% endif %}>GitHub</button>
+    </div>
+
+    <div class="tab-row">
+        <button class="tab-btn active" type="button" data-tab="mail">Mail</button>
+        <button class="tab-btn" type="button" data-tab="azure">Azure</button>
+        <button class="tab-btn" type="button" data-tab="aws">AWS</button>
+    </div>
+
+    <div id="panel-mail" class="panel active">
+        {% if not project %}
+            <p style="margin:0;color:#9f3919;">Generate code in this session first, then send it by mail.</p>
+        {% else %}
+            <form id="mail-form" method="post" action="{% url 'send_session_code_email' session.id %}">
+                {% csrf_token %}
+                <div class="field">
+                    <label for="to_email">To Email</label>
+                    <input id="to_email" name="to_email" type="email" placeholder="recipient@example.com" required>
+                </div>
+                <div class="field">
+                    <label for="subject">Subject</label>
+                    <input id="subject" name="subject" type="text" value="Saved Code - Session {{ session.id }}">
+                </div>
+                <div class="field">
+                    <label for="body">Body</label>
+                    <textarea id="body" name="body" rows="6">Please find the attached saved code ZIP from SRM AI Code Generator.</textarea>
+                </div>
+                <button class="button" type="submit">Send</button>
+                <div class="status" id="mail-status"></div>
+            </form>
+        {% endif %}
+    </div>
+
+    <div id="panel-azure" class="panel">
+        {% if not project %}
+            <p style="margin:0;color:#9f3919;">Generate code in this session first, then publish to Azure.</p>
+        {% else %}
+            <form id="azure-form">
+                <div class="grid-two">
+                    <div class="field">
+                        <label for="az_tenant_id">Tenant ID</label>
+                        <input id="az_tenant_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required>
+                    </div>
+                    <div class="field">
+                        <label for="az_subscription_id">Subscription ID</label>
+                        <input id="az_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required>
+                    </div>
+                </div>
+                <div class="grid-two">
+                    <div class="field">
+                        <label for="az_client_id">Client ID</label>
+                        <input id="az_client_id" type="text" required>
+                    </div>
+                    <div class="field">
+                        <label for="az_client_secret">Client Secret</label>
+                        <input id="az_client_secret" type="password" required>
+                    </div>
+                </div>
+                <div class="grid-two">
+                    <div class="field">
+                        <label for="az_resource_group">Resource Group</label>
+                        <input id="az_resource_group" type="text" placeholder="srm-rg" required>
+                    </div>
+                    <div class="field">
+                        <label for="az_plan">App Service Plan</label>
+                        <input id="az_plan" type="text" placeholder="srm-plan" required>
+                    </div>
+                </div>
+                <div class="grid-two">
+                    <div class="field">
+                        <label for="az_webapp">Web App Name</label>
+                        <input id="az_webapp" type="text" placeholder="myapp-unique-name" required>
+                    </div>
+                    <div class="field">
+                        <label for="az_region">Region</label>
+                        <input id="az_region" type="text" value="centralindia">
+                    </div>
+                </div>
+                <div class="grid-two">
+                    <div class="field">
+                        <label for="az_runtime">Runtime</label>
+                        <input id="az_runtime" type="text" value="PYTHON:3.11">
+                    </div>
+                    <div class="field">
+                        <label for="az_startup">Startup Command (optional)</label>
+                        <input id="az_startup" type="text" placeholder="gunicorn app:app --bind=0.0.0.0:\$PORT">
+                    </div>
+                </div>
+                <div class="field">
+                    <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                        <input id="az_auto_create" type="checkbox">
+                        Auto-create Resource Group, Plan, and Web App
+                    </label>
+                </div>
+                <button class="button" type="submit">Publish to Azure</button>
+                <div class="status" id="azure-status"></div>
+            </form>
+        {% endif %}
+    </div>
+
+    <div id="panel-aws" class="panel">
+        <p style="margin:0;color:#184879;font-weight:700;">AWS publish is being added soon.</p>
+    </div>
+</section>
+
+<script>
+    const tabButtons = document.querySelectorAll(".tab-btn");
+    const panels = {
+        mail: document.getElementById("panel-mail"),
+        azure: document.getElementById("panel-azure"),
+        aws: document.getElementById("panel-aws"),
+    };
+
+    tabButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const tab = btn.dataset.tab;
+            tabButtons.forEach((item) => item.classList.toggle("active", item === btn));
+            Object.entries(panels).forEach(([key, panel]) => {
+                panel.classList.toggle("active", key === tab);
+            });
+        });
+    });
+
+    const getCookie = (name) => {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(";").shift();
+        return "";
+    };
+
+    const githubBtn = document.getElementById("github-btn");
+    const mailForm = document.getElementById("mail-form");
+    const mailStatus = document.getElementById("mail-status");
+    const azureForm = document.getElementById("azure-form");
+    const azureStatus = document.getElementById("azure-status");
+
+    if (githubBtn) {
+        githubBtn.addEventListener("click", async () => {
+            const repoName = window.prompt("Enter GitHub repository name:");
+            if (!repoName || !repoName.trim()) return;
+
+            const oldText = githubBtn.textContent;
+            githubBtn.disabled = true;
+            githubBtn.textContent = "Pushing...";
+
+            try {
+                const pushRequest = async (overwrite = false) => {
+                    const response = await fetch("{% url 'push_session_to_github' session.id %}", {
+                        method: "POST",
+                        headers: {
+                            "X-CSRFToken": getCookie("csrftoken"),
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({ repo_name: repoName.trim(), overwrite }),
+                    });
+                    return await response.json();
+                };
+
+                const first = await pushRequest(false);
+                if (first.need_overwrite) {
+                    const ok = window.confirm(first.message || "Repository exists. Overwrite code?");
+                    if (!ok) return;
+                    const second = await pushRequest(true);
+                    if (!second.ok) {
+                        alert(second.error || "GitHub push failed.");
+                        return;
+                    }
+                    alert(`${second.message}\n${second.repo_url}`);
+                    return;
+                }
+
+                if (!first.ok) {
+                    alert(first.error || "GitHub push failed.");
+                    return;
+                }
+                alert(`${first.message}\n${first.repo_url}`);
+            } catch (error) {
+                alert(`GitHub push error: ${error}`);
+            } finally {
+                githubBtn.disabled = false;
+                githubBtn.textContent = oldText;
+            }
+        });
+    }
+
+    if (mailForm && mailStatus) {
+        mailForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            mailStatus.textContent = "Sending...";
+
+            try {
+                const response = await fetch(mailForm.action, {
+                    method: "POST",
+                    headers: {
+                        "X-CSRFToken": getCookie("csrftoken"),
+                    },
+                    body: new FormData(mailForm),
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    mailStatus.textContent = data.error || "Email send failed.";
+                    return;
+                }
+                mailStatus.textContent = data.message || "Email sent.";
+            } catch (error) {
+                mailStatus.textContent = `Email send error: ${error}`;
+            }
+        });
+    }
+
+    if (azureForm && azureStatus) {
+        azureForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            azureStatus.textContent = "Publishing to Azure... this can take a few minutes.";
+
+            const payload = {
+                tenant_id: document.getElementById("az_tenant_id").value.trim(),
+                subscription_id: document.getElementById("az_subscription_id").value.trim(),
+                client_id: document.getElementById("az_client_id").value.trim(),
+                client_secret: document.getElementById("az_client_secret").value.trim(),
+                resource_group: document.getElementById("az_resource_group").value.trim(),
+                app_service_plan: document.getElementById("az_plan").value.trim(),
+                webapp_name: document.getElementById("az_webapp").value.trim(),
+                region: document.getElementById("az_region").value.trim(),
+                runtime: document.getElementById("az_runtime").value.trim(),
+                startup_command: document.getElementById("az_startup").value.trim(),
+                auto_create: document.getElementById("az_auto_create").checked,
+            };
+
+            try {
+                const response = await fetch("{% url 'publish_session_to_azure' session.id %}", {
+                    method: "POST",
+                    headers: {
+                        "X-CSRFToken": getCookie("csrftoken"),
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    const logs = Array.isArray(data.logs) ? `\n\n${data.logs.join("\n")}` : "";
+                    azureStatus.textContent = `${data.error || "Azure publish failed."}${logs}`;
+                    return;
+                }
+                azureStatus.textContent = `${data.message}\n${data.app_url}`;
+            } catch (error) {
+                azureStatus.textContent = `Azure publish error: ${error}`;
+            }
+        });
+    }
+</script>
+{% endblock %}

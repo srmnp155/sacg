@@ -179,6 +179,99 @@
         background: #eef3fb;
     }
 
+    .msg.typing {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        width: auto;
+        padding: 10px 14px;
+    }
+
+    #processing-indicator {
+        margin-top: 10px;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        background: linear-gradient(
+            120deg,
+            rgba(255, 255, 255, 0.22) 0%,
+            rgba(169, 204, 255, 0.22) 52%,
+            rgba(255, 255, 255, 0.26) 100%
+        );
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        box-shadow: 0 10px 30px rgba(16, 34, 59, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        overflow: hidden;
+        position: relative;
+    }
+
+    #processing-indicator::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: -30%;
+        width: 30%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+        animation: shimmerSlide 1.6s linear infinite;
+    }
+
+    #processing-indicator.active {
+        display: flex;
+    }
+
+    .processing-text {
+        font-weight: 700;
+        font-size: 0.92rem;
+        color: #1f3f63;
+        letter-spacing: 0.01em;
+    }
+
+    .processing-dots {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        position: relative;
+        z-index: 1;
+    }
+
+    .typing-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: #5b6f92;
+        animation: dotPulse 1s infinite ease-in-out;
+        opacity: 0.5;
+    }
+
+    .typing-dot:nth-child(2) {
+        animation-delay: 0.15s;
+    }
+
+    .typing-dot:nth-child(3) {
+        animation-delay: 0.3s;
+    }
+
+    @keyframes dotPulse {
+        0%, 80%, 100% {
+            transform: translateY(0);
+            opacity: 0.35;
+        }
+        40% {
+            transform: translateY(-4px);
+            opacity: 1;
+        }
+    }
+
+    @keyframes shimmerSlide {
+        from { left: -30%; }
+        to { left: 100%; }
+    }
+
     #chat-form {
         display: flex;
         gap: 10px;
@@ -266,7 +359,6 @@
                                 Download
                             </a>
                             <button class="action-btn github-btn" data-github-for="{{ session.id }}" type="button">GitHub</button>
-                            <button class="action-btn publish-soon" type="button">Publish</button>
                             <a
                                 class="action-btn {% if not session.session_test_url %}disabled{% endif %}"
                                 data-test-for="{{ session.id }}"
@@ -274,6 +366,7 @@
                             >
                                 Test
                             </a>
+                            <a class="action-btn" href="{% url 'session_publish_page' session.id %}">Publish</a>
                         </div>
                     </div>
                 {% empty %}
@@ -295,6 +388,14 @@
                 <textarea id="user-input" placeholder="Ask anything or request code generation..." required></textarea>
                 <button class="button" type="submit">Send</button>
             </form>
+            <div id="processing-indicator" aria-live="polite">
+                <span class="processing-text" id="processing-text">Thinking...</span>
+                <span class="processing-dots">
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                </span>
+            </div>
         </div>
     </div>
 </section>
@@ -322,6 +423,8 @@
     const sessionList = document.getElementById("session-list");
     const sessionLabel = document.getElementById("active-session-label");
     const newChatBtn = document.getElementById("new-chat");
+    const processingIndicator = document.getElementById("processing-indicator");
+    const processingText = document.getElementById("processing-text");
     let activeSessionId = null;
 
     const getCookie = (name) => {
@@ -337,6 +440,35 @@
         line.textContent = `${role === "user" ? "You" : "Bot"}: ${text}`;
         messagesBox.appendChild(line);
         messagesBox.scrollTop = messagesBox.scrollHeight;
+    };
+
+    const addTypingIndicator = () => {
+        const line = document.createElement("div");
+        line.className = "msg bot typing";
+        line.innerHTML = `<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>`;
+        messagesBox.appendChild(line);
+        messagesBox.scrollTop = messagesBox.scrollHeight;
+        return line;
+    };
+
+    const getAwareStatus = (message) => {
+        const text = (message || "").toLowerCase();
+        if (/(download|zip|export|save file)/.test(text)) return "Preparing download package...";
+        if (/(github|push|repo|repository|commit)/.test(text)) return "Preparing GitHub-ready code...";
+        if (/(publish|deploy|app service|aws|azure)/.test(text)) return "Preparing deployment steps...";
+        if (/(code|build|generate|function|api|bug|fix|script)/.test(text)) return "Generating your code...";
+        return "Thinking through your request...";
+    };
+
+    const showProcessing = (message) => {
+        if (!processingIndicator || !processingText) return;
+        processingText.textContent = getAwareStatus(message);
+        processingIndicator.classList.add("active");
+    };
+
+    const hideProcessing = () => {
+        if (!processingIndicator) return;
+        processingIndicator.classList.remove("active");
     };
 
     const renderSessionMessages = (session) => {
@@ -391,15 +523,12 @@
             <div class="session-actions">
                 <a class="action-btn download-btn ${downloadUrl ? "" : "disabled"}" data-download-for="${sessionId}" href="${downloadUrl || "#"}">Download</a>
                 <button class="action-btn github-btn" data-github-for="${sessionId}" type="button">GitHub</button>
-                <button class="action-btn publish-soon" type="button">Publish</button>
                 <a class="action-btn ${testUrl ? "" : "disabled"}" data-test-for="${sessionId}" href="${testUrl || "#"}">Test</a>
+                <a class="action-btn" href="/session/${sessionId}/publish/">Publish</a>
             </div>
         `;
         row.querySelector(".session-btn").addEventListener("click", () => setActiveSession(sessionId));
         attachGithubHandlers(row);
-        row.querySelectorAll(".publish-soon").forEach((btn) => {
-            btn.addEventListener("click", () => alert("Publish feature will be added in upcoming steps."));
-        });
         sessionList.prepend(row);
         attachDeleteHandlers(row);
     };
@@ -529,9 +658,6 @@
         btn.addEventListener("click", () => setActiveSession(Number(btn.dataset.id)));
     });
     attachGithubHandlers(document);
-    document.querySelectorAll(".publish-soon").forEach((btn) => {
-        btn.addEventListener("click", () => alert("Publish feature will be added in upcoming steps."));
-    });
     attachDeleteHandlers(document);
 
     if (existingSessions.length > 0) {
@@ -556,6 +682,10 @@
 
         addMessage("user", message);
         userInput.value = "";
+        const sendBtn = chatForm.querySelector("button[type='submit']");
+        if (sendBtn) sendBtn.disabled = true;
+        showProcessing(message);
+        const typingEl = addTypingIndicator();
 
         try {
             const response = await fetch("/api/chat/", {
@@ -569,10 +699,14 @@
 
             const data = await response.json();
             if (!response.ok) {
+                typingEl.remove();
+                hideProcessing();
                 addMessage("bot", data.error || "Request failed.");
                 return;
             }
 
+            typingEl.remove();
+            hideProcessing();
             addMessage("bot", data.reply || "No response.");
             let current = existingSessions.find((s) => s.id === data.session_id);
             if (!current) {
@@ -605,7 +739,12 @@
                 window.location.href = current.downloadUrl;
             }
         } catch (error) {
+            typingEl.remove();
+            hideProcessing();
             addMessage("bot", `Network error: ${error}`);
+        } finally {
+            hideProcessing();
+            if (sendBtn) sendBtn.disabled = false;
         }
     });
 </script>

@@ -18,6 +18,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
+from django.core.mail import EmailMessage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -245,6 +246,90 @@ def _is_download_intent(message: str) -> bool:
     return any(word in text for word in keywords)
 
 
+def _is_project_update_request(message: str) -> bool:
+    text = message.lower().strip()
+    if not text:
+        return False
+
+    update_verbs = (
+        "add",
+        "modify",
+        "update",
+        "change",
+        "edit",
+        "delete",
+        "remove",
+        "rename",
+        "replace",
+    )
+    file_markers = (
+        "file",
+        "folder",
+        "path",
+        ".py",
+        ".js",
+        ".ts",
+        ".html",
+        ".css",
+        ".json",
+        ".md",
+        ".java",
+        ".go",
+        ".php",
+        ".cs",
+    )
+    return any(v in text for v in update_verbs) and any(marker in text for marker in file_markers)
+
+
+def _build_updated_project_files(
+    user_prompt: str,
+    conversation_messages: list[dict],
+    latest_project: GeneratedProject,
+) -> dict:
+    client = _build_client()
+    existing_files_json = json.dumps(latest_project.files, ensure_ascii=False)
+    completion = client.chat.completions.create(
+        model=settings.AZURE_OPENAI_DEPLOYMENT,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a codebase update engine. "
+                    "You will receive an existing virtual project and a requested change. "
+                    "Return valid JSON only with the full updated project state.\n"
+                    "Output schema:\n"
+                    "{\n"
+                    '  "project_name": "short-kebab-name",\n'
+                    '  "files": [\n'
+                    '    {"path": "relative/path.ext", "content": "file content"}\n'
+                    "  ]\n"
+                    "}\n"
+                    "Rules:\n"
+                    "- Apply user request exactly.\n"
+                    "- For delete/remove requests, omit those files from final files list.\n"
+                    "- For add/create requests, include new files.\n"
+                    "- For modify/update requests, update file content.\n"
+                    "- Keep unrelated existing files unchanged.\n"
+                    "- No markdown, no explanations, no absolute paths, no '..' path segments."
+                ),
+            },
+            {
+                "role": "system",
+                "content": (
+                    f"Existing project name: {latest_project.project_name}\n"
+                    f"Existing files JSON: {existing_files_json}"
+                ),
+            },
+            *conversation_messages,
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.15,
+    )
+    content = completion.choices[0].message.content if completion.choices else "{}"
+    return _extract_json_object(content or "{}")
+
+
 def _build_conversational_reply(
     user_prompt: str,
     conversation_messages: list[dict],
@@ -351,7 +436,7 @@ def download_project(request, project_id: int):
     return _build_zip_response(project)
 
 
-def _build_zip_response(project: GeneratedProject) -> HttpResponse:
+def _build_zip_bytes(project: GeneratedProject) -> bytes:
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for item in project.files:
@@ -360,8 +445,11 @@ def _build_zip_response(project: GeneratedProject) -> HttpResponse:
             if not path:
                 continue
             archive.writestr(path, content)
+    return zip_buffer.getvalue()
 
-    response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
+
+def _build_zip_response(project: GeneratedProject) -> HttpResponse:
+    response = HttpResponse(_build_zip_bytes(project), content_type="application/zip")
     response["Content-Disposition"] = f'attachment; filename="{project.project_name}.zip"'
     return response
 
@@ -373,6 +461,263 @@ def download_session_project(request, session_id: int):
     if not project:
         return JsonResponse({"error": "No generated project for this session yet."}, status=404)
     return _build_zip_response(project)
+
+
+@login_required
+def session_publish_page(request, session_id: int):
+    session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
+    project = session.generated_projects.order_by("-created_at").first()
+    return render(
+        request,
+        "chatbot/publish.html",
+        {
+            "session": session,
+            "project": project,
+            "download_url": reverse("download_session_project", args=[session.id]) if project else "",
+            "test_url": reverse("session_test_ide", args=[session.id]) if project else "",
+        },
+    )
+
+
+@login_required
+@require_http_methods(["POST"])
+def send_session_code_email(request, session_id: int):
+    session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
+    project = session.generated_projects.order_by("-created_at").first()
+    if not project:
+        return JsonResponse({"error": "No saved code found in this session."}, status=404)
+
+    to_email = str(request.POST.get("to_email") or "").strip()
+    subject = str(request.POST.get("subject") or "").strip() or f"Saved Code - Session {session.id}"
+    body = str(request.POST.get("body") or "").strip() or "Attached is the requested saved code zip."
+    if not to_email:
+        return JsonResponse({"error": "Recipient email is required."}, status=400)
+
+    from_email = (
+        getattr(settings, "DEFAULT_FROM_EMAIL", "").strip()
+        or getattr(settings, "EMAIL_HOST_USER", "").strip()
+        or "no-reply@srm-ai.local"
+    )
+    attachment_name = f"{project.project_name}.zip"
+    attachment_bytes = _build_zip_bytes(project)
+    email = EmailMessage(
+        subject=subject,
+        body=body,
+        from_email=from_email,
+        to=[to_email],
+    )
+    email.attach(attachment_name, attachment_bytes, "application/zip")
+    try:
+        sent = email.send(fail_silently=False)
+    except Exception as exc:
+        return JsonResponse({"error": f"Email send failed: {exc}"}, status=502)
+    if sent < 1:
+        return JsonResponse({"error": "Email was not sent."}, status=502)
+
+    return JsonResponse({"ok": True, "message": f"Email sent to {to_email} with {attachment_name}."})
+
+
+def _run_process(command: list[str], timeout: int = 300) -> tuple[int, str]:
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    out = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    return completed.returncode, out
+
+
+@login_required
+@require_http_methods(["POST"])
+def publish_session_to_azure(request, session_id: int):
+    session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
+    project = session.generated_projects.order_by("-created_at").first()
+    if not project:
+        return JsonResponse({"error": "No saved code found in this session."}, status=404)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    tenant_id = str(payload.get("tenant_id") or "").strip()
+    client_id = str(payload.get("client_id") or "").strip()
+    client_secret = str(payload.get("client_secret") or "").strip()
+    subscription_id = str(payload.get("subscription_id") or "").strip()
+    resource_group = str(payload.get("resource_group") or "").strip()
+    plan_name = str(payload.get("app_service_plan") or "").strip()
+    webapp_name = str(payload.get("webapp_name") or "").strip()
+    region = str(payload.get("region") or "").strip() or "centralindia"
+    runtime = str(payload.get("runtime") or "").strip() or "PYTHON:3.11"
+    startup_command = str(payload.get("startup_command") or "").strip()
+    auto_create = bool(payload.get("auto_create", False))
+
+    required = {
+        "tenant_id": tenant_id,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "subscription_id": subscription_id,
+        "resource_group": resource_group,
+        "app_service_plan": plan_name,
+        "webapp_name": webapp_name,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        return JsonResponse({"error": f"Missing required fields: {', '.join(missing)}"}, status=400)
+
+    az_cmd = _find_cmd(("az.cmd", "az"))
+    if not az_cmd:
+        return JsonResponse({"error": "Azure CLI not found. Install Azure CLI and try again."}, status=400)
+
+    steps_log: list[str] = []
+
+    try:
+        code, output = _run_process(
+            [
+                az_cmd,
+                "login",
+                "--service-principal",
+                "--username",
+                client_id,
+                "--password",
+                client_secret,
+                "--tenant",
+                tenant_id,
+            ]
+        )
+        steps_log.append("az login --service-principal")
+        if code != 0:
+            return JsonResponse({"error": "Azure login failed.", "logs": steps_log + [output]}, status=502)
+
+        code, output = _run_process([az_cmd, "account", "set", "--subscription", subscription_id])
+        steps_log.append(f"az account set --subscription {subscription_id}")
+        if code != 0:
+            return JsonResponse({"error": "Failed to select Azure subscription.", "logs": steps_log + [output]}, status=502)
+
+        if auto_create:
+            code, output = _run_process(
+                [az_cmd, "group", "create", "--name", resource_group, "--location", region]
+            )
+            steps_log.append(f"az group create --name {resource_group} --location {region}")
+            if code != 0:
+                return JsonResponse({"error": "Failed to create resource group.", "logs": steps_log + [output]}, status=502)
+
+            code, output = _run_process(
+                [
+                    az_cmd,
+                    "appservice",
+                    "plan",
+                    "create",
+                    "--name",
+                    plan_name,
+                    "--resource-group",
+                    resource_group,
+                    "--is-linux",
+                    "--sku",
+                    "B1",
+                ]
+            )
+            steps_log.append(f"az appservice plan create --name {plan_name}")
+            if code != 0:
+                return JsonResponse({"error": "Failed to create App Service Plan.", "logs": steps_log + [output]}, status=502)
+
+            code, output = _run_process(
+                [
+                    az_cmd,
+                    "webapp",
+                    "create",
+                    "--name",
+                    webapp_name,
+                    "--resource-group",
+                    resource_group,
+                    "--plan",
+                    plan_name,
+                    "--runtime",
+                    runtime,
+                ]
+            )
+            steps_log.append(f"az webapp create --name {webapp_name} --runtime {runtime}")
+            if code != 0:
+                return JsonResponse({"error": "Failed to create Web App.", "logs": steps_log + [output]}, status=502)
+
+        if startup_command:
+            code, output = _run_process(
+                [
+                    az_cmd,
+                    "webapp",
+                    "config",
+                    "set",
+                    "--resource-group",
+                    resource_group,
+                    "--name",
+                    webapp_name,
+                    "--startup-file",
+                    startup_command,
+                ]
+            )
+            steps_log.append(f"az webapp config set --name {webapp_name} --startup-file <provided>")
+            if code != 0:
+                return JsonResponse({"error": "Failed to set startup command.", "logs": steps_log + [output]}, status=502)
+
+        with tempfile.TemporaryDirectory(prefix="srm_publish_") as temp_dir:
+            zip_path = Path(temp_dir) / f"{project.project_name}.zip"
+            zip_path.write_bytes(_build_zip_bytes(project))
+
+            code, output = _run_process(
+                [
+                    az_cmd,
+                    "webapp",
+                    "deploy",
+                    "--resource-group",
+                    resource_group,
+                    "--name",
+                    webapp_name,
+                    "--src-path",
+                    str(zip_path),
+                    "--type",
+                    "zip",
+                ],
+                timeout=900,
+            )
+            steps_log.append(f"az webapp deploy --name {webapp_name} --type zip")
+            if code != 0:
+                code2, output2 = _run_process(
+                    [
+                        az_cmd,
+                        "webapp",
+                        "deployment",
+                        "source",
+                        "config-zip",
+                        "--resource-group",
+                        resource_group,
+                        "--name",
+                        webapp_name,
+                        "--src",
+                        str(zip_path),
+                    ],
+                    timeout=900,
+                )
+                steps_log.append(f"az webapp deployment source config-zip --name {webapp_name}")
+                if code2 != 0:
+                    return JsonResponse(
+                        {"error": "Azure zip deploy failed.", "logs": steps_log + [output, output2]},
+                        status=502,
+                    )
+
+        app_url = f"https://{webapp_name}.azurewebsites.net"
+        return JsonResponse(
+            {
+                "ok": True,
+                "message": f"Publish completed for {webapp_name}.",
+                "app_url": app_url,
+                "logs": steps_log,
+            }
+        )
+    except subprocess.TimeoutExpired:
+        return JsonResponse({"error": "Azure publish timed out."}, status=504)
+    except Exception as exc:
+        return JsonResponse({"error": f"Azure publish failed: {exc}"}, status=500)
 
 
 def _pick_default_entry_file(files: list[dict]) -> str | None:
@@ -953,6 +1298,20 @@ def chat_api(request):
                 files=files,
             )
             answer = _dynamic_user_reply(request.user.username, message, generated.project_name, files)
+            download_url = reverse("download_project", args=[generated.id])
+            session_download_url = reverse("download_session_project", args=[session.id])
+        elif latest_project and _is_project_update_request(message):
+            project_data = _build_updated_project_files(message, request_messages, latest_project)
+            project_name, files = _normalize_generated_project(project_data)
+            latest_project.project_name = project_name or latest_project.project_name
+            latest_project.files = files
+            latest_project.save(update_fields=["project_name", "files"])
+            generated = latest_project
+            answer = (
+                f"{request.user.username}, your requested project changes are updated in this session. "
+                f"I saved the latest virtual code with {len(files)} file(s). "
+                "Open Test to verify or run it."
+            )
             download_url = reverse("download_project", args=[generated.id])
             session_download_url = reverse("download_session_project", args=[session.id])
         else:
