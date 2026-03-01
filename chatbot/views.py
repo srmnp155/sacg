@@ -23,6 +23,7 @@ from django.core.mail import EmailMessage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 from openai import AzureOpenAI
 
@@ -978,6 +979,7 @@ def worker_publish_job_detail(request, job_id):
     )
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def worker_publish_job_update(request, job_id):
     if not _is_worker_authorized(request):
