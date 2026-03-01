@@ -402,6 +402,15 @@
         });
     }
 
+    async function parseJsonSafely(response) {
+        const raw = await response.text();
+        try {
+            return { data: JSON.parse(raw), raw };
+        } catch (_) {
+            return { data: null, raw };
+        }
+    }
+
     if (azureForm && azureStatus) {
         azureForm.addEventListener("submit", async (event) => {
             event.preventDefault();
@@ -483,10 +492,18 @@
                     headers: {
                         "X-CSRFToken": getCookie("csrftoken"),
                         "Content-Type": "application/json",
+                        "Accept": "application/json",
                     },
                     body: JSON.stringify(payload),
                 });
-                let data = await response.json();
+                const { data, raw } = await parseJsonSafely(response);
+                if (!data) {
+                    azureStatus.textContent =
+                        `Failed to create publish job (HTTP ${response.status}). ` +
+                        `Expected JSON but got different content.\n\n` +
+                        `${String(raw || "").slice(0, 500)}`;
+                    return;
+                }
                 if (!response.ok || !data.ok || !data.job || !data.job.job_id) {
                     azureStatus.textContent = data.error || "Failed to create publish job.";
                     return;
@@ -498,9 +515,24 @@
                 const pollStatus = async () => {
                     const statusResp = await fetch(`/publish/jobs/${jobId}/status/`, {
                         method: "GET",
-                        headers: { "X-CSRFToken": getCookie("csrftoken") },
+                        headers: {
+                            "X-CSRFToken": getCookie("csrftoken"),
+                            "Accept": "application/json",
+                        },
                     });
-                    const statusData = await statusResp.json();
+                    const { data: statusData, raw: statusRaw } = await parseJsonSafely(statusResp);
+                    if (!statusData) {
+                        if ([502, 503, 504].includes(statusResp.status)) {
+                            azureStatus.textContent =
+                                `${azureStatus.textContent}\n\nTemporary server issue (HTTP ${statusResp.status}). Retrying...`;
+                            return false;
+                        }
+                        azureStatus.textContent =
+                            `Failed to fetch publish status (HTTP ${statusResp.status}). ` +
+                            `Expected JSON response.\n\n` +
+                            `${String(statusRaw || "").slice(0, 500)}`;
+                        return true;
+                    }
                     if (!statusResp.ok || !statusData.ok || !statusData.job) {
                         azureStatus.textContent = statusData.error || "Failed to fetch publish status.";
                         return true;
