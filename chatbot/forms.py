@@ -7,10 +7,33 @@ from .models import UserProfile
 
 class SignUpForm(UserCreationForm):
     email = forms.EmailField(required=True)
+    deployment_mode = forms.ChoiceField(
+        choices=UserProfile.DEPLOYMENT_MODE_CHOICES,
+        initial=UserProfile.DEPLOYMENT_MODE_VSCODE,
+    )
 
     class Meta(UserCreationForm.Meta):
         model = User
-        fields = ("username", "email")
+        fields = ("username", "email", "deployment_mode")
+
+    def clean_deployment_mode(self):
+        deployment_mode = self.cleaned_data.get("deployment_mode")
+        if deployment_mode == UserProfile.DEPLOYMENT_MODE_AZURE:
+            raise forms.ValidationError(
+                "coming very soon. currently this website only works on with vs code mode"
+            )
+        return deployment_mode
+
+    def save(self, commit=True):
+        user = super().save(commit=commit)
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        profile.deployment_mode = self.cleaned_data.get(
+            "deployment_mode",
+            UserProfile.DEPLOYMENT_MODE_VSCODE,
+        )
+        profile.deployment_mode_prompt_seen = True
+        profile.save(update_fields=["deployment_mode", "deployment_mode_prompt_seen", "updated_at"])
+        return user
 
 
 class ProfileForm(forms.ModelForm):

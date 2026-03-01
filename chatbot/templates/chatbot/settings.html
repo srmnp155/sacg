@@ -1,0 +1,74 @@
+{% extends "chatbot/base.html" %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2 style="margin-top:0;">Settings</h2>
+    <p style="margin:0 0 14px;color:#5c6b80;">Choose your deployment mode and review instructions.</p>
+
+    <form method="post" style="margin-bottom:18px;">
+        {% csrf_token %}
+        <div class="form-row">
+            <label for="deployment_mode">Deployment Mode</label>
+            <select
+                id="deployment_mode"
+                name="deployment_mode"
+                style="width:100%;padding:10px 12px;border:1px solid #ced6e4;border-radius:10px;font-size:1rem;"
+            >
+                <option value="vscode" {% if deployment_mode == "vscode" %}selected{% endif %}>VS Code</option>
+                <option value="azure_app_service" {% if deployment_mode == "azure_app_service" %}selected{% endif %}>Azure App Service</option>
+            </select>
+        </div>
+        <button class="button" type="submit">Save</button>
+    </form>
+
+    {% if deployment_mode == "vscode" %}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div style="border:1px solid #ced6e4;border-radius:10px;padding:12px;background:#fff;">
+                <h3 style="margin-top:0;">VS Code Prerequisites</h3>
+                <ol style="margin:0;padding-left:18px;">
+                    <li>Install VS Code and Python runtime.</li>
+                    <li>Use chat/test/publish pages to generate and download code ZIP.</li>
+                    <li>Extract project and open folder in VS Code.</li>
+                    <li>Create a virtual environment and install project dependencies.</li>
+                </ol>
+            </div>
+            <div style="border:1px solid #ced6e4;border-radius:10px;padding:12px;background:#fff;">
+                <h3 style="margin-top:0;">How Features Work</h3>
+                <ul style="margin:0;padding-left:18px;">
+                    <li><strong>Chat:</strong> generate/update code in a session.</li>
+                    <li><strong>Test:</strong> inspect and run saved session files.</li>
+                    <li><strong>GitHub:</strong> push session code to your GitHub repository.</li>
+                    <li><strong>Publish:</strong> use ZIP/external git deployment options from publish page.</li>
+                </ul>
+            </div>
+        </div>
+
+        <div style="margin-top:12px;border:1px solid #ced6e4;border-radius:10px;padding:12px;background:#fff;">
+            <h3 style="margin-top:0;">Where To Set GitHub Token</h3>
+            <ol style="margin:0;padding-left:18px;">
+                <li>Open <a href="{% url 'profile_page' %}">Profile</a>.</li>
+                <li>Set <strong>GitHub Username</strong> and <strong>GitHub Token</strong>.</li>
+                <li>Save profile and use GitHub button from Chat/Test/Publish pages.</li>
+            </ol>
+        </div>
+
+        <div style="margin-top:12px;border:1px solid #ced6e4;border-radius:10px;padding:12px;background:#fff;">
+            <h3 style="margin-top:0;">Azure Credentials (For Future Azure Mode)</h3>
+            <ol style="margin:0;padding-left:18px;">
+                <li>Open Azure Portal -> <strong>Microsoft Entra ID</strong> -> <strong>App registrations</strong>.</li>
+                <li>Create or open your app registration.</li>
+                <li>Copy <strong>Application (client) ID</strong> and <strong>Directory (tenant) ID</strong>.</li>
+                <li>Go to <strong>Certificates &amp; secrets</strong>, create client secret, copy <strong>Value</strong> (not Secret ID).</li>
+                <li>Grant RBAC access in Subscription/Resource Group (Contributor or scoped role).</li>
+            </ol>
+        </div>
+    {% else %}
+        <div style="border:1px solid #e6c2b8;border-radius:10px;padding:12px;background:#fff7f4;color:#8f2a13;">
+            <h3 style="margin-top:0;">Azure App Service Mode</h3>
+            <p style="margin:0;">coming soon.. currently this website only works on with vs code mode</p>
+        </div>
+    {% endif %}
+</section>
+{% endblock %}

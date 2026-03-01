@@ -327,6 +327,56 @@
         opacity: 0.45;
         pointer-events: none;
     }
+
+    .mode-modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(8, 20, 36, 0.45);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+        padding: 16px;
+    }
+
+    .mode-modal.active {
+        display: flex;
+    }
+
+    .mode-modal-card {
+        width: min(520px, 100%);
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        background: rgba(255, 255, 255, 0.85);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        box-shadow: 0 18px 42px rgba(8, 20, 36, 0.2);
+        padding: 16px;
+    }
+
+    .mode-modal-card h3 {
+        margin: 0 0 8px;
+    }
+
+    .mode-modal-card p {
+        margin: 0 0 10px;
+        color: #5c6b80;
+    }
+
+    .mode-modal-card select {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #ced6e4;
+        border-radius: 10px;
+        font-size: 1rem;
+        margin-bottom: 10px;
+    }
+
+    .mode-status {
+        margin-top: 8px;
+        font-size: 0.9rem;
+        color: #184879;
+    }
 </style>
 {% endblock %}
 
@@ -400,6 +450,19 @@
     </div>
 </section>
 
+<div id="deployment-mode-modal" class="mode-modal" aria-hidden="true">
+    <div class="mode-modal-card">
+        <h3>Select Deployment Mode</h3>
+        <p>Please choose your preferred deployment mode for your account.</p>
+        <select id="deployment-mode-select">
+            <option value="vscode" {% if deployment_mode == "vscode" %}selected{% endif %}>VS Code</option>
+            <option value="azure_app_service" {% if deployment_mode == "azure_app_service" %}selected{% endif %}>Azure App Service</option>
+        </select>
+        <button id="deployment-mode-set-btn" class="button" type="button">Set</button>
+        <div id="deployment-mode-status" class="mode-status"></div>
+    </div>
+</div>
+
 <script>
     const existingSessions = [
         {% for session in sessions %}
@@ -425,6 +488,11 @@
     const newChatBtn = document.getElementById("new-chat");
     const processingIndicator = document.getElementById("processing-indicator");
     const processingText = document.getElementById("processing-text");
+    const deploymentModeModal = document.getElementById("deployment-mode-modal");
+    const deploymentModeSelect = document.getElementById("deployment-mode-select");
+    const deploymentModeSetBtn = document.getElementById("deployment-mode-set-btn");
+    const deploymentModeStatus = document.getElementById("deployment-mode-status");
+    const showDeploymentModePrompt = {{ show_deployment_mode_prompt|yesno:"true,false" }};
     let activeSessionId = null;
 
     const getCookie = (name) => {
@@ -667,6 +735,48 @@
     newChatBtn.addEventListener("click", () => {
         showNewTaskState();
     });
+
+    if (showDeploymentModePrompt && deploymentModeModal) {
+        deploymentModeModal.classList.add("active");
+        deploymentModeModal.setAttribute("aria-hidden", "false");
+    }
+
+    if (deploymentModeSetBtn && deploymentModeSelect) {
+        deploymentModeSetBtn.addEventListener("click", async () => {
+            const selectedMode = deploymentModeSelect.value;
+            deploymentModeSetBtn.disabled = true;
+            deploymentModeStatus.textContent = "Saving...";
+
+            try {
+                const response = await fetch("{% url 'set_deployment_mode' %}", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-CSRFToken": getCookie("csrftoken"),
+                    },
+                    body: JSON.stringify({ deployment_mode: selectedMode }),
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    deploymentModeStatus.textContent = data.error || "Failed to save deployment mode.";
+                    return;
+                }
+
+                deploymentModeStatus.textContent = data.message || "Saved.";
+                if (selectedMode === "azure_app_service") {
+                    alert("coming soon..");
+                }
+                setTimeout(() => {
+                    deploymentModeModal.classList.remove("active");
+                    deploymentModeModal.setAttribute("aria-hidden", "true");
+                }, 500);
+            } catch (error) {
+                deploymentModeStatus.textContent = `Save error: ${error}`;
+            } finally {
+                deploymentModeSetBtn.disabled = false;
+            }
+        });
+    }
 
     userInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && !event.shiftKey) {

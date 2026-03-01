@@ -131,6 +131,7 @@
         <nav class="nav">
             {% if user.is_authenticated %}
                 <a href="{% url 'chat_page' %}">Chat</a>
+                <a href="{% url 'user_settings_page' %}" title="Settings">&#9881; Settings</a>
                 <a href="{% url 'profile_page' %}">Profile ({{ user.get_full_name|default:user.username }})</a>
                 <form method="post" action="{% url 'logout' %}" style="display:inline;">
                     {% csrf_token %}

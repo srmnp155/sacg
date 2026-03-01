@@ -80,6 +80,29 @@
         white-space: pre-wrap;
     }
 
+    .mode-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+
+    .mode-chip {
+        border: 1px solid #ced6e4;
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.9);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-weight: 700;
+    }
+
+    .mode-chip input {
+        margin: 0;
+    }
+
     .grid-two {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -155,6 +178,37 @@
             <p style="margin:0;color:#9f3919;">Generate code in this session first, then publish to Azure.</p>
         {% else %}
             <form id="azure-form">
+                <div class="field">
+                    <label>Deployment Method</label>
+                    <div class="mode-row">
+                        <label class="mode-chip">
+                            <input type="radio" name="az_deploy_mode" value="zip" checked>
+                            Deployment using zip
+                        </label>
+                        <label class="mode-chip">
+                            <input type="radio" name="az_deploy_mode" value="external_git">
+                            Deployment using git (external git)
+                        </label>
+                        <label class="mode-chip">
+                            <input type="radio" name="az_deploy_mode" value="git_cicd">
+                            Deployment using git ci/cd
+                        </label>
+                    </div>
+                </div>
+
+                <div id="azure-git-fields" style="display:none;">
+                    <div class="grid-two">
+                        <div class="field">
+                            <label for="az_repo_url">Repository URL (auto-filled after GitHub push)</label>
+                            <input id="az_repo_url" type="text" placeholder="Auto populated after successful push" readonly>
+                        </div>
+                        <div class="field">
+                            <label for="az_repo_branch">Branch</label>
+                            <input id="az_repo_branch" type="text" value="main">
+                        </div>
+                    </div>
+                </div>
+
                 <div class="grid-two">
                     <div class="field">
                         <label for="az_tenant_id">Tenant ID</label>
@@ -252,6 +306,27 @@
     const mailStatus = document.getElementById("mail-status");
     const azureForm = document.getElementById("azure-form");
     const azureStatus = document.getElementById("azure-status");
+    const azureGitFields = document.getElementById("azure-git-fields");
+    const azureRepoUrl = document.getElementById("az_repo_url");
+    const azureRepoBranch = document.getElementById("az_repo_branch");
+
+    const getAzureMode = () => {
+        const selected = document.querySelector("input[name='az_deploy_mode']:checked");
+        return selected ? selected.value : "zip";
+    };
+
+    const refreshAzureMode = () => {
+        const mode = getAzureMode();
+        const isGit = mode !== "zip";
+        if (azureGitFields) azureGitFields.style.display = isGit ? "block" : "none";
+        if (azureRepoUrl) azureRepoUrl.required = isGit;
+        if (azureRepoBranch) azureRepoBranch.required = isGit;
+    };
+
+    document.querySelectorAll("input[name='az_deploy_mode']").forEach((radio) => {
+        radio.addEventListener("change", refreshAzureMode);
+    });
+    refreshAzureMode();
 
     if (githubBtn) {
         githubBtn.addEventListener("click", async () => {
@@ -332,7 +407,9 @@
             event.preventDefault();
             azureStatus.textContent = "Publishing to Azure... this can take a few minutes.";
 
+            const deploymentMode = getAzureMode();
             const payload = {
+                deployment_mode: deploymentMode,
                 tenant_id: document.getElementById("az_tenant_id").value.trim(),
                 subscription_id: document.getElementById("az_subscription_id").value.trim(),
                 client_id: document.getElementById("az_client_id").value.trim(),
@@ -344,10 +421,64 @@
                 runtime: document.getElementById("az_runtime").value.trim(),
                 startup_command: document.getElementById("az_startup").value.trim(),
                 auto_create: document.getElementById("az_auto_create").checked,
+                repo_url: (azureRepoUrl && azureRepoUrl.value ? azureRepoUrl.value.trim() : ""),
+                repo_branch: (azureRepoBranch && azureRepoBranch.value ? azureRepoBranch.value.trim() : "main"),
             };
 
             try {
-                const response = await fetch("{% url 'publish_session_to_azure' session.id %}", {
+                if (deploymentMode !== "zip" && !payload.repo_url) {
+                    const repoName = window.prompt("Enter GitHub repository name for deployment source:");
+                    if (!repoName || !repoName.trim()) {
+                        azureStatus.textContent = "Publish cancelled. Repository name is required for git deployment.";
+                        return;
+                    }
+
+                    azureStatus.textContent = "Pushing session code to GitHub...";
+                    const pushRequest = async (overwrite = false) => {
+                        const response = await fetch("{% url 'push_session_to_github' session.id %}", {
+                            method: "POST",
+                            headers: {
+                                "X-CSRFToken": getCookie("csrftoken"),
+                                "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                                repo_name: repoName.trim(),
+                                overwrite,
+                            }),
+                        });
+                        return await response.json();
+                    };
+
+                    const first = await pushRequest(false);
+                    if (first.need_overwrite) {
+                        const ok = window.confirm(first.message || "Repository exists. Overwrite code?");
+                        if (!ok) {
+                            azureStatus.textContent = "Publish cancelled by user.";
+                            return;
+                        }
+                        const second = await pushRequest(true);
+                        if (!second.ok) {
+                            azureStatus.textContent = second.error || "GitHub push failed.";
+                            return;
+                        }
+                        payload.repo_url = second.repo_url || "";
+                    } else if (!first.ok) {
+                        azureStatus.textContent = first.error || "GitHub push failed.";
+                        return;
+                    } else {
+                        payload.repo_url = first.repo_url || "";
+                    }
+
+                    if (!payload.repo_url) {
+                        azureStatus.textContent = "GitHub push completed but repository URL was not returned.";
+                        return;
+                    }
+                    if (azureRepoUrl) azureRepoUrl.value = payload.repo_url;
+                    azureStatus.textContent = "GitHub push successful. Continuing Azure deployment...";
+                }
+
+                azureStatus.textContent = "Creating publish job...";
+                const response = await fetch("{% url 'start_publish_job' session.id %}", {
                     method: "POST",
                     headers: {
                         "X-CSRFToken": getCookie("csrftoken"),
@@ -355,13 +486,48 @@
                     },
                     body: JSON.stringify(payload),
                 });
-                const data = await response.json();
-                if (!response.ok) {
-                    const logs = Array.isArray(data.logs) ? `\n\n${data.logs.join("\n")}` : "";
-                    azureStatus.textContent = `${data.error || "Azure publish failed."}${logs}`;
+                let data = await response.json();
+                if (!response.ok || !data.ok || !data.job || !data.job.job_id) {
+                    azureStatus.textContent = data.error || "Failed to create publish job.";
                     return;
                 }
-                azureStatus.textContent = `${data.message}\n${data.app_url}`;
+
+                const jobId = data.job.job_id;
+                azureStatus.textContent = `Job queued: ${jobId}\nStatus: ${data.job.status}`;
+
+                const pollStatus = async () => {
+                    const statusResp = await fetch(`/publish/jobs/${jobId}/status/`, {
+                        method: "GET",
+                        headers: { "X-CSRFToken": getCookie("csrftoken") },
+                    });
+                    const statusData = await statusResp.json();
+                    if (!statusResp.ok || !statusData.ok || !statusData.job) {
+                        azureStatus.textContent = statusData.error || "Failed to fetch publish status.";
+                        return true;
+                    }
+
+                    const job = statusData.job;
+                    const top = [
+                        `Job: ${job.job_id}`,
+                        `Status: ${job.status}`,
+                        job.result_url ? `URL: ${job.result_url}` : "",
+                        job.error_message ? `Error: ${job.error_message}` : "",
+                    ].filter(Boolean).join("\n");
+                    const logs = job.logs ? `\n\nLogs:\n${job.logs}` : "";
+                    azureStatus.textContent = `${top}${logs}`;
+
+                    return job.status === "success" || job.status === "failed";
+                };
+
+                let finished = false;
+                for (let i = 0; i < 120; i += 1) {
+                    finished = await pollStatus();
+                    if (finished) break;
+                    await new Promise((resolve) => setTimeout(resolve, 3000));
+                }
+                if (!finished) {
+                    azureStatus.textContent = `${azureStatus.textContent}\n\nStatus polling timeout. Check again in a moment.`;
+                }
             } catch (error) {
                 azureStatus.textContent = `Azure publish error: ${error}`;
             }

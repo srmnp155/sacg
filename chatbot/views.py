@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from azure.storage.queue import QueueClient
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login
@@ -26,7 +27,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 from openai import AzureOpenAI
 
 from .forms import ProfileForm, SignUpForm
-from .models import ChatMessage, ChatSession, GeneratedProject, UserProfile
+from .models import ChatMessage, ChatSession, GeneratedProject, PublishJob, UserProfile
 
 MAX_FILES_PER_PROJECT = 40
 GITHUB_API_BASE = "https://api.github.com"
@@ -75,7 +76,66 @@ def profile_page(request):
 
 
 @login_required
+def user_settings_page(request):
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    if request.method == "POST":
+        mode = str(request.POST.get("deployment_mode") or "").strip()
+        valid_modes = {
+            UserProfile.DEPLOYMENT_MODE_VSCODE,
+            UserProfile.DEPLOYMENT_MODE_AZURE,
+        }
+        if mode not in valid_modes:
+            messages.error(request, "Invalid deployment mode.")
+            return redirect("user_settings_page")
+
+        profile.deployment_mode = mode
+        profile.deployment_mode_prompt_seen = True
+        profile.save(update_fields=["deployment_mode", "deployment_mode_prompt_seen", "updated_at"])
+        if mode == UserProfile.DEPLOYMENT_MODE_AZURE:
+            messages.info(request, "Azure App Service mode is coming soon..")
+        else:
+            messages.success(request, "Deployment mode updated to VS Code.")
+        return redirect("user_settings_page")
+
+    return render(
+        request,
+        "chatbot/settings.html",
+        {
+            "deployment_mode": profile.deployment_mode,
+        },
+    )
+
+
+@login_required
+@require_http_methods(["POST"])
+def set_deployment_mode(request):
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    try:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    mode = str(payload.get("deployment_mode") or "").strip()
+    valid_modes = {
+        UserProfile.DEPLOYMENT_MODE_VSCODE,
+        UserProfile.DEPLOYMENT_MODE_AZURE,
+    }
+    if mode not in valid_modes:
+        return JsonResponse({"error": "Invalid deployment mode."}, status=400)
+
+    profile.deployment_mode = mode
+    profile.deployment_mode_prompt_seen = True
+    profile.save(update_fields=["deployment_mode", "deployment_mode_prompt_seen", "updated_at"])
+
+    message = "Deployment mode saved."
+    if mode == UserProfile.DEPLOYMENT_MODE_AZURE:
+        message = "coming soon.."
+    return JsonResponse({"ok": True, "deployment_mode": mode, "message": message})
+
+
+@login_required
 def chat_page(request):
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
     sessions = list(
         ChatSession.objects.filter(user=request.user).prefetch_related("messages", "generated_projects")
     )
@@ -91,6 +151,8 @@ def chat_page(request):
         "chatbot/chat.html",
         {
             "sessions": sessions,
+            "show_deployment_mode_prompt": not profile.deployment_mode_prompt_seen,
+            "deployment_mode": profile.deployment_mode,
         },
     )
 
@@ -528,6 +590,48 @@ def _run_process(command: list[str], timeout: int = 300) -> tuple[int, str]:
     return completed.returncode, out
 
 
+def _get_publish_queue_client() -> QueueClient:
+    conn = (settings.PUBLISH_QUEUE_CONNECTION_STRING or "").strip()
+    if not conn:
+        raise ValueError("PUBLISH_QUEUE_CONNECTION_STRING is missing.")
+    queue_name = (settings.PUBLISH_QUEUE_NAME or "publish-jobs").strip() or "publish-jobs"
+    return QueueClient.from_connection_string(conn, queue_name)
+
+
+def _enqueue_publish_job(job: PublishJob) -> None:
+    queue_client = _get_publish_queue_client()
+    try:
+        queue_client.create_queue()
+    except Exception:
+        pass
+    queue_client.send_message(json.dumps({"job_id": str(job.id)}))
+
+
+def _publish_job_json(job: PublishJob) -> dict:
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "deployment_mode": job.deployment_mode,
+        "result_url": job.result_url or "",
+        "error_message": job.error_message or "",
+        "logs": job.logs or "",
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+    }
+
+
+def _is_worker_authorized(request) -> bool:
+    configured = (settings.PUBLISH_WORKER_TOKEN or "").strip()
+    if not configured:
+        return False
+    provided = (
+        request.headers.get("X-Worker-Token")
+        or request.META.get("HTTP_X_WORKER_TOKEN")
+        or ""
+    ).strip()
+    return provided == configured
+
+
 @login_required
 @require_http_methods(["POST"])
 def publish_session_to_azure(request, session_id: int):
@@ -552,6 +656,15 @@ def publish_session_to_azure(request, session_id: int):
     runtime = str(payload.get("runtime") or "").strip() or "PYTHON:3.11"
     startup_command = str(payload.get("startup_command") or "").strip()
     auto_create = bool(payload.get("auto_create", False))
+    deployment_mode = str(payload.get("deployment_mode") or "zip").strip().lower()
+    repo_url = str(payload.get("repo_url") or "").strip()
+    repo_branch = str(payload.get("repo_branch") or "").strip() or "main"
+
+    valid_modes = {"zip", "external_git", "git_cicd"}
+    if deployment_mode not in valid_modes:
+        return JsonResponse({"error": "Invalid deployment mode."}, status=400)
+    if deployment_mode in {"external_git", "git_cicd"} and not repo_url:
+        return JsonResponse({"error": "repo_url is required for git deployment modes."}, status=400)
 
     required = {
         "tenant_id": tenant_id,
@@ -660,56 +773,117 @@ def publish_session_to_azure(request, session_id: int):
             if code != 0:
                 return JsonResponse({"error": "Failed to set startup command.", "logs": steps_log + [output]}, status=502)
 
-        with tempfile.TemporaryDirectory(prefix="srm_publish_") as temp_dir:
-            zip_path = Path(temp_dir) / f"{project.project_name}.zip"
-            zip_path.write_bytes(_build_zip_bytes(project))
+        if deployment_mode == "zip":
+            with tempfile.TemporaryDirectory(prefix="srm_publish_") as temp_dir:
+                zip_path = Path(temp_dir) / f"{project.project_name}.zip"
+                zip_path.write_bytes(_build_zip_bytes(project))
 
-            code, output = _run_process(
-                [
-                    az_cmd,
-                    "webapp",
-                    "deploy",
-                    "--resource-group",
-                    resource_group,
-                    "--name",
-                    webapp_name,
-                    "--src-path",
-                    str(zip_path),
-                    "--type",
-                    "zip",
-                ],
-                timeout=900,
-            )
-            steps_log.append(f"az webapp deploy --name {webapp_name} --type zip")
-            if code != 0:
-                code2, output2 = _run_process(
+                code, output = _run_process(
                     [
                         az_cmd,
                         "webapp",
-                        "deployment",
-                        "source",
-                        "config-zip",
+                        "deploy",
                         "--resource-group",
                         resource_group,
                         "--name",
                         webapp_name,
-                        "--src",
+                        "--src-path",
                         str(zip_path),
+                        "--type",
+                        "zip",
                     ],
                     timeout=900,
                 )
-                steps_log.append(f"az webapp deployment source config-zip --name {webapp_name}")
-                if code2 != 0:
-                    return JsonResponse(
-                        {"error": "Azure zip deploy failed.", "logs": steps_log + [output, output2]},
-                        status=502,
+                steps_log.append(f"az webapp deploy --name {webapp_name} --type zip")
+                if code != 0:
+                    code2, output2 = _run_process(
+                        [
+                            az_cmd,
+                            "webapp",
+                            "deployment",
+                            "source",
+                            "config-zip",
+                            "--resource-group",
+                            resource_group,
+                            "--name",
+                            webapp_name,
+                            "--src",
+                            str(zip_path),
+                        ],
+                        timeout=900,
                     )
+                    steps_log.append(f"az webapp deployment source config-zip --name {webapp_name}")
+                    if code2 != 0:
+                        return JsonResponse(
+                            {"error": "Azure zip deploy failed.", "logs": steps_log + [output, output2]},
+                            status=502,
+                        )
+        elif deployment_mode == "external_git":
+            cmd = [
+                az_cmd,
+                "webapp",
+                "deployment",
+                "source",
+                "config",
+                "--resource-group",
+                resource_group,
+                "--name",
+                webapp_name,
+                "--repo-url",
+                repo_url,
+                "--branch",
+                repo_branch,
+            ]
+            # Azure CLI treats --manual-integration as a switch flag (no true/false value).
+            cmd.append("--manual-integration")
+
+            code, output = _run_process(cmd, timeout=900)
+            mode_label = "external git"
+            steps_log.append(
+                f"az webapp deployment source config --name {webapp_name} --mode {mode_label}"
+            )
+            if code != 0:
+                return JsonResponse(
+                    {"error": f"Azure {mode_label} deployment configuration failed.", "logs": steps_log + [output]},
+                    status=502,
+                )
+        else:
+            # CI/CD linkage usually requires an interactive user context (GitHub authorization).
+            # Service principal auth can provision Azure resources but often cannot finalize GitHub Actions binding.
+            steps_log.append(
+                "git ci/cd mode selected: resource prerequisites completed; manual GitHub/App Service linkage required"
+            )
+            app_url = f"https://{webapp_name}.azurewebsites.net"
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "message": (
+                        "Azure app prerequisites are ready. Complete CI/CD binding in Azure Deployment Center "
+                        "using GitHub Actions for this Web App."
+                    ),
+                    "app_url": app_url,
+                    "logs": steps_log,
+                    "manual_action_required": True,
+                    "next_steps": [
+                        "Open Azure Portal -> App Service -> Deployment Center.",
+                        "Choose GitHub as source and authorize GitHub account.",
+                        f"Select repository URL: {repo_url}",
+                        f"Select branch: {repo_branch}",
+                        "Save and let GitHub Actions workflow run.",
+                    ],
+                }
+            )
 
         app_url = f"https://{webapp_name}.azurewebsites.net"
+        mode_msg = {
+            "zip": "ZIP deployment completed",
+            "external_git": "External Git deployment configured",
+            "git_cicd": "Git CI/CD deployment configured",
+        }.get(deployment_mode, "Publish completed")
         return JsonResponse(
             {
                 "ok": True,
-                "message": f"Publish completed for {webapp_name}.",
+                "message": f"{mode_msg} for {webapp_name}.",
                 "app_url": app_url,
                 "logs": steps_log,
             }
@@ -718,6 +892,129 @@ def publish_session_to_azure(request, session_id: int):
         return JsonResponse({"error": "Azure publish timed out."}, status=504)
     except Exception as exc:
         return JsonResponse({"error": f"Azure publish failed: {exc}"}, status=500)
+
+
+@login_required
+@require_http_methods(["POST"])
+def start_publish_job(request, session_id: int):
+    session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
+    project = session.generated_projects.order_by("-created_at").first()
+    if not project:
+        return JsonResponse({"error": "No saved code found in this session."}, status=404)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    deployment_mode = str(payload.get("deployment_mode") or "zip").strip().lower()
+    if deployment_mode not in {"zip", "external_git", "git_cicd"}:
+        return JsonResponse({"error": "Invalid deployment mode."}, status=400)
+
+    job_payload = {
+        "project_id": project.id,
+        "session_id": session.id,
+        "deployment_mode": deployment_mode,
+        "resource_group": str(payload.get("resource_group") or "").strip(),
+        "app_service_plan": str(payload.get("app_service_plan") or "").strip(),
+        "webapp_name": str(payload.get("webapp_name") or "").strip(),
+        "region": str(payload.get("region") or "").strip() or "centralindia",
+        "runtime": str(payload.get("runtime") or "").strip() or "PYTHON:3.11",
+        "startup_command": str(payload.get("startup_command") or "").strip(),
+        "auto_create": bool(payload.get("auto_create", False)),
+        "repo_url": str(payload.get("repo_url") or "").strip(),
+        "repo_branch": str(payload.get("repo_branch") or "").strip() or "main",
+        "tenant_id": str(payload.get("tenant_id") or "").strip(),
+        "subscription_id": str(payload.get("subscription_id") or "").strip(),
+        "client_id": str(payload.get("client_id") or "").strip(),
+        "client_secret": str(payload.get("client_secret") or "").strip(),
+    }
+
+    job = PublishJob.objects.create(
+        user=request.user,
+        session=session,
+        deployment_mode=deployment_mode,
+        status=PublishJob.STATUS_QUEUED,
+        payload=job_payload,
+        logs="Job queued from Django publish page.",
+    )
+
+    try:
+        _enqueue_publish_job(job)
+    except Exception as exc:
+        job.status = PublishJob.STATUS_FAILED
+        job.error_message = f"Queue enqueue failed: {exc}"
+        job.logs = f"{job.logs}\n{job.error_message}".strip()
+        job.save(update_fields=["status", "error_message", "logs", "updated_at"])
+        return JsonResponse({"error": job.error_message}, status=502)
+
+    return JsonResponse({"ok": True, "job": _publish_job_json(job)})
+
+
+@login_required
+@require_http_methods(["GET"])
+def publish_job_status(request, job_id):
+    job = get_object_or_404(PublishJob, pk=job_id, user=request.user)
+    return JsonResponse({"ok": True, "job": _publish_job_json(job)})
+
+
+@require_http_methods(["GET"])
+def worker_publish_job_detail(request, job_id):
+    if not _is_worker_authorized(request):
+        return JsonResponse({"error": "Unauthorized worker request."}, status=401)
+
+    job = get_object_or_404(PublishJob, pk=job_id)
+    project = job.session.generated_projects.order_by("-created_at").first()
+    files = project.files if project and isinstance(project.files, list) else []
+    return JsonResponse(
+        {
+            "ok": True,
+            "job": _publish_job_json(job),
+            "payload": job.payload or {},
+            "project_name": project.project_name if project else "",
+            "files": files,
+            "owner_username": job.user.username,
+        }
+    )
+
+
+@require_http_methods(["POST"])
+def worker_publish_job_update(request, job_id):
+    if not _is_worker_authorized(request):
+        return JsonResponse({"error": "Unauthorized worker request."}, status=401)
+
+    job = get_object_or_404(PublishJob, pk=job_id)
+    try:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    new_status = str(payload.get("status") or "").strip().lower()
+    if new_status in {
+        PublishJob.STATUS_QUEUED,
+        PublishJob.STATUS_RUNNING,
+        PublishJob.STATUS_SUCCESS,
+        PublishJob.STATUS_FAILED,
+    }:
+        job.status = new_status
+
+    incoming_logs = str(payload.get("logs") or "").strip()
+    if incoming_logs:
+        if job.logs:
+            job.logs = f"{job.logs}\n{incoming_logs}"
+        else:
+            job.logs = incoming_logs
+
+    error_message = str(payload.get("error_message") or "").strip()
+    if error_message:
+        job.error_message = error_message
+
+    result_url = str(payload.get("result_url") or "").strip()
+    if result_url:
+        job.result_url = result_url
+
+    job.save(update_fields=["status", "logs", "error_message", "result_url", "updated_at"])
+    return JsonResponse({"ok": True, "job": _publish_job_json(job)})
 
 
 def _pick_default_entry_file(files: list[dict]) -> str | None:
