@@ -22,8 +22,6 @@ from .views import (
     signup_page,
     start_publish_job,
     user_settings_page,
-    worker_publish_job_detail,
-    worker_publish_job_update,
 )
 
 
@@ -67,8 +65,6 @@ urlpatterns = [
     path("session/<int:session_id>/publish/azure/", publish_session_to_azure, name="publish_session_to_azure"),
     path("session/<int:session_id>/publish/start/", start_publish_job, name="start_publish_job"),
     path("publish/jobs/<uuid:job_id>/status/", publish_job_status, name="publish_job_status"),
-    path("worker/publish/jobs/<uuid:job_id>/detail/", worker_publish_job_detail, name="worker_publish_job_detail"),
-    path("worker/publish/jobs/<uuid:job_id>/update/", worker_publish_job_update, name="worker_publish_job_update"),
     path("session/<int:session_id>/delete/", delete_session, name="delete_session"),
     path("session/<int:session_id>/github-push/", push_session_to_github, name="push_session_to_github"),
     path("saved-code/<int:project_id>/delete/", delete_saved_code, name="delete_saved_code"),

@@ -14,7 +14,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from azure.storage.queue import QueueClient
 try:
     from azure.identity import DefaultAzureCredential
 except Exception:  # pragma: no cover - handled at runtime when feature is enabled
@@ -27,7 +26,6 @@ from django.core.mail import EmailMessage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 from openai import AzureOpenAI
 
@@ -782,23 +780,6 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
     return {"ok": True, "app_url": app_url, "logs": logs, "message": "Azure publish completed."}
 
 
-def _get_publish_queue_client() -> QueueClient:
-    conn = (settings.PUBLISH_QUEUE_CONNECTION_STRING or "").strip()
-    if not conn:
-        raise ValueError("PUBLISH_QUEUE_CONNECTION_STRING is missing.")
-    queue_name = (settings.PUBLISH_QUEUE_NAME or "publish-jobs").strip() or "publish-jobs"
-    return QueueClient.from_connection_string(conn, queue_name)
-
-
-def _enqueue_publish_job(job: PublishJob) -> None:
-    queue_client = _get_publish_queue_client()
-    try:
-        queue_client.create_queue()
-    except Exception:
-        pass
-    queue_client.send_message(json.dumps({"job_id": str(job.id)}))
-
-
 def _publish_job_json(job: PublishJob) -> dict:
     return {
         "job_id": str(job.id),
@@ -810,18 +791,6 @@ def _publish_job_json(job: PublishJob) -> dict:
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
     }
-
-
-def _is_worker_authorized(request) -> bool:
-    configured = (settings.PUBLISH_WORKER_TOKEN or "").strip()
-    if not configured:
-        return False
-    provided = (
-        request.headers.get("X-Worker-Token")
-        or request.META.get("HTTP_X_WORKER_TOKEN")
-        or ""
-    ).strip()
-    return provided == configured
 
 
 @login_required
@@ -1128,42 +1097,31 @@ def start_publish_job(request, session_id: int):
         deployment_mode=deployment_mode,
         status=PublishJob.STATUS_QUEUED,
         payload=job_payload,
-        logs="Job queued from Django publish page.",
+        logs="Publish started from Django using Azure SDK.",
     )
 
-    if getattr(settings, "AZURE_PUBLISH_USE_MANAGED_IDENTITY", False):
-        job.status = PublishJob.STATUS_RUNNING
-        job.logs = "Managed identity publish started from Django."
-        job.save(update_fields=["status", "logs", "updated_at"])
-        try:
-            result = _run_publish_via_managed_identity(project, job_payload)
-            result_logs = result.get("logs", [])
-            if result_logs:
-                job.logs = f"{job.logs}\n" + "\n".join(str(line) for line in result_logs)
-            if result.get("app_url"):
-                job.result_url = str(result.get("app_url"))
-            if result.get("ok"):
-                job.status = PublishJob.STATUS_SUCCESS
-                if result.get("manual_action_required"):
-                    job.logs = f"{job.logs}\nManual action required: configure Deployment Center GitHub binding."
-            else:
-                job.status = PublishJob.STATUS_FAILED
-                job.error_message = str(result.get("error") or "Managed identity publish failed.")
-        except Exception as exc:
-            job.status = PublishJob.STATUS_FAILED
-            job.error_message = f"Managed identity publish failed: {exc}"
-            job.logs = f"{job.logs}\n{job.error_message}".strip()
-        job.save(update_fields=["status", "logs", "result_url", "error_message", "updated_at"])
-        return JsonResponse({"ok": True, "job": _publish_job_json(job)})
-
+    job.status = PublishJob.STATUS_RUNNING
+    job.logs = "Managed identity publish started from Django."
+    job.save(update_fields=["status", "logs", "updated_at"])
     try:
-        _enqueue_publish_job(job)
+        result = _run_publish_via_managed_identity(project, job_payload)
+        result_logs = result.get("logs", [])
+        if result_logs:
+            job.logs = f"{job.logs}\n" + "\n".join(str(line) for line in result_logs)
+        if result.get("app_url"):
+            job.result_url = str(result.get("app_url"))
+        if result.get("ok"):
+            job.status = PublishJob.STATUS_SUCCESS
+            if result.get("manual_action_required"):
+                job.logs = f"{job.logs}\nManual action required: configure Deployment Center GitHub binding."
+        else:
+            job.status = PublishJob.STATUS_FAILED
+            job.error_message = str(result.get("error") or "Managed identity publish failed.")
     except Exception as exc:
         job.status = PublishJob.STATUS_FAILED
-        job.error_message = f"Queue enqueue failed: {exc}"
+        job.error_message = f"Managed identity publish failed: {exc}"
         job.logs = f"{job.logs}\n{job.error_message}".strip()
-        job.save(update_fields=["status", "error_message", "logs", "updated_at"])
-        return JsonResponse({"error": job.error_message}, status=502)
+    job.save(update_fields=["status", "logs", "result_url", "error_message", "updated_at"])
 
     return JsonResponse({"ok": True, "job": _publish_job_json(job)})
 
@@ -1172,66 +1130,6 @@ def start_publish_job(request, session_id: int):
 @require_http_methods(["GET"])
 def publish_job_status(request, job_id):
     job = get_object_or_404(PublishJob, pk=job_id, user=request.user)
-    return JsonResponse({"ok": True, "job": _publish_job_json(job)})
-
-
-@require_http_methods(["GET"])
-def worker_publish_job_detail(request, job_id):
-    if not _is_worker_authorized(request):
-        return JsonResponse({"error": "Unauthorized worker request."}, status=401)
-
-    job = get_object_or_404(PublishJob, pk=job_id)
-    project = job.session.generated_projects.order_by("-created_at").first()
-    files = project.files if project and isinstance(project.files, list) else []
-    return JsonResponse(
-        {
-            "ok": True,
-            "job": _publish_job_json(job),
-            "payload": job.payload or {},
-            "project_name": project.project_name if project else "",
-            "files": files,
-            "owner_username": job.user.username,
-        }
-    )
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def worker_publish_job_update(request, job_id):
-    if not _is_worker_authorized(request):
-        return JsonResponse({"error": "Unauthorized worker request."}, status=401)
-
-    job = get_object_or_404(PublishJob, pk=job_id)
-    try:
-        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-    except (ValueError, UnicodeDecodeError):
-        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
-
-    new_status = str(payload.get("status") or "").strip().lower()
-    if new_status in {
-        PublishJob.STATUS_QUEUED,
-        PublishJob.STATUS_RUNNING,
-        PublishJob.STATUS_SUCCESS,
-        PublishJob.STATUS_FAILED,
-    }:
-        job.status = new_status
-
-    incoming_logs = str(payload.get("logs") or "").strip()
-    if incoming_logs:
-        if job.logs:
-            job.logs = f"{job.logs}\n{incoming_logs}"
-        else:
-            job.logs = incoming_logs
-
-    error_message = str(payload.get("error_message") or "").strip()
-    if error_message:
-        job.error_message = error_message
-
-    result_url = str(payload.get("result_url") or "").strip()
-    if result_url:
-        job.result_url = result_url
-
-    job.save(update_fields=["status", "logs", "error_message", "result_url", "updated_at"])
     return JsonResponse({"ok": True, "job": _publish_job_json(job)})
 
 
