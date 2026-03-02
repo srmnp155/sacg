@@ -726,11 +726,13 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
             or ""
         ).strip()
         publish_password = (props.get("publishingPassword") or props.get("password") or "").strip()
-        scm_uri = (props.get("scmUri") or f"https://{webapp_name}.scm.azurewebsites.net").strip().rstrip("/")
         if not publish_user or not publish_password:
             raise RuntimeError("Could not fetch publishing credentials for ZIP deploy.")
 
         zip_bytes = _build_zip_bytes(project)
+        # Some ARM responses include scmUri with embedded userinfo that can break URL parsing.
+        # Build a clean Kudu endpoint from web app name and send Basic auth header explicitly.
+        scm_uri = f"https://{webapp_name}.scm.azurewebsites.net"
         deploy_url = f"{scm_uri}/api/zipdeploy?isAsync=true"
         auth = base64.b64encode(f"{publish_user}:{publish_password}".encode("utf-8")).decode("utf-8")
         deploy_req = urllib.request.Request(
