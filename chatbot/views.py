@@ -15,6 +15,10 @@ import urllib.request
 from pathlib import Path
 
 from azure.storage.queue import QueueClient
+try:
+    from azure.identity import DefaultAzureCredential
+except Exception:  # pragma: no cover - handled at runtime when feature is enabled
+    DefaultAzureCredential = None
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login
@@ -591,6 +595,193 @@ def _run_process(command: list[str], timeout: int = 300) -> tuple[int, str]:
     return completed.returncode, out
 
 
+def _runtime_to_linux_fx_version(runtime: str) -> str:
+    raw = (runtime or "").strip().upper()
+    if not raw:
+        return "PYTHON|3.11"
+    if ":" in raw:
+        lang, version = raw.split(":", 1)
+        return f"{lang}|{version}"
+    if "|" in raw:
+        return raw
+    return f"PYTHON|{raw}"
+
+
+def _arm_request(
+    method: str,
+    url: str,
+    token: str,
+    payload: dict | None = None,
+    timeout: int = 300,
+) -> dict:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(url, data=body, method=method.upper(), headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace").strip()
+            if not text:
+                return {}
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text}
+    except urllib.error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {url} failed with {exc.code}: {error_text[:600]}")
+
+
+def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: dict) -> dict:
+    if DefaultAzureCredential is None:
+        raise RuntimeError("azure-identity is missing. Install dependencies and redeploy.")
+
+    subscription_id = str(job_payload.get("subscription_id") or "").strip()
+    resource_group = str(job_payload.get("resource_group") or "").strip()
+    plan_name = str(job_payload.get("app_service_plan") or "").strip()
+    webapp_name = str(job_payload.get("webapp_name") or "").strip()
+    region = str(job_payload.get("region") or "").strip() or "centralindia"
+    runtime = str(job_payload.get("runtime") or "").strip() or "PYTHON:3.11"
+    startup_command = str(job_payload.get("startup_command") or "").strip()
+    auto_create = bool(job_payload.get("auto_create", False))
+    deployment_mode = str(job_payload.get("deployment_mode") or "zip").strip().lower()
+    repo_url = str(job_payload.get("repo_url") or "").strip()
+    repo_branch = str(job_payload.get("repo_branch") or "").strip() or "main"
+
+    required = {
+        "subscription_id": subscription_id,
+        "resource_group": resource_group,
+        "app_service_plan": plan_name,
+        "webapp_name": webapp_name,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        return {"ok": False, "error": f"Missing required fields: {', '.join(missing)}", "logs": []}
+
+    logs: list[str] = []
+    credential = DefaultAzureCredential()
+    token = credential.get_token("https://management.azure.com/.default").token
+    logs.append("Managed identity token acquired.")
+
+    api_version = "2023-12-01"
+    base = f"https://management.azure.com/subscriptions/{subscription_id}"
+    rg_url = f"{base}/resourcegroups/{resource_group}?api-version=2023-07-01"
+    plan_url = (
+        f"{base}/resourceGroups/{resource_group}/providers/Microsoft.Web/"
+        f"serverfarms/{plan_name}?api-version={api_version}"
+    )
+    app_url_api = (
+        f"{base}/resourceGroups/{resource_group}/providers/Microsoft.Web/"
+        f"sites/{webapp_name}?api-version={api_version}"
+    )
+
+    if auto_create:
+        _arm_request("PUT", rg_url, token, {"location": region})
+        logs.append(f"Resource group ensured: {resource_group}")
+
+        plan_payload = {
+            "location": region,
+            "kind": "linux",
+            "sku": {"name": "B1", "tier": "Basic", "size": "B1", "capacity": 1},
+            "properties": {"reserved": True},
+        }
+        _arm_request("PUT", plan_url, token, plan_payload)
+        logs.append(f"App Service plan ensured: {plan_name}")
+
+        app_payload = {
+            "location": region,
+            "kind": "app,linux",
+            "properties": {
+                "serverFarmId": (
+                    f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
+                    f"/providers/Microsoft.Web/serverfarms/{plan_name}"
+                ),
+                "siteConfig": {"linuxFxVersion": _runtime_to_linux_fx_version(runtime)},
+                "httpsOnly": True,
+            },
+        }
+        _arm_request("PUT", app_url_api, token, app_payload, timeout=900)
+        logs.append(f"Web App ensured: {webapp_name}")
+
+    if startup_command:
+        config_url = (
+            f"{base}/resourceGroups/{resource_group}/providers/Microsoft.Web/"
+            f"sites/{webapp_name}/config/web?api-version={api_version}"
+        )
+        _arm_request("PUT", config_url, token, {"properties": {"appCommandLine": startup_command}})
+        logs.append("Startup command updated.")
+
+    if deployment_mode == "zip":
+        publish_cred_url = (
+            f"{base}/resourceGroups/{resource_group}/providers/Microsoft.Web/"
+            f"sites/{webapp_name}/config/publishingcredentials/list?api-version={api_version}"
+        )
+        cred_resp = _arm_request("POST", publish_cred_url, token, {})
+        props = cred_resp.get("properties", {}) if isinstance(cred_resp, dict) else {}
+        publish_user = (
+            props.get("publishingUserName")
+            or props.get("publishingUsername")
+            or props.get("name")
+            or ""
+        ).strip()
+        publish_password = (props.get("publishingPassword") or props.get("password") or "").strip()
+        scm_uri = (props.get("scmUri") or f"https://{webapp_name}.scm.azurewebsites.net").strip().rstrip("/")
+        if not publish_user or not publish_password:
+            raise RuntimeError("Could not fetch publishing credentials for ZIP deploy.")
+
+        zip_bytes = _build_zip_bytes(project)
+        deploy_url = f"{scm_uri}/api/zipdeploy?isAsync=true"
+        auth = base64.b64encode(f"{publish_user}:{publish_password}".encode("utf-8")).decode("utf-8")
+        deploy_req = urllib.request.Request(
+            deploy_url,
+            data=zip_bytes,
+            method="POST",
+            headers={
+                "Authorization": f"Basic {auth}",
+                "Content-Type": "application/zip",
+            },
+        )
+        with urllib.request.urlopen(deploy_req, timeout=900):
+            pass
+        logs.append("ZIP deployment submitted to Kudu.")
+    elif deployment_mode == "external_git":
+        if not repo_url:
+            return {"ok": False, "error": "repo_url is required for external git mode.", "logs": logs}
+        source_url = (
+            f"{base}/resourceGroups/{resource_group}/providers/Microsoft.Web/"
+            f"sites/{webapp_name}/sourcecontrols/web?api-version={api_version}"
+        )
+        source_payload = {
+            "properties": {
+                "repoUrl": repo_url,
+                "branch": repo_branch,
+                "isManualIntegration": True,
+                "isMercurial": False,
+            }
+        }
+        _arm_request("PUT", source_url, token, source_payload)
+        logs.append("External Git deployment source configured.")
+    else:
+        app_url = f"https://{webapp_name}.azurewebsites.net"
+        logs.append("Git CI/CD selected; manual Deployment Center binding is required.")
+        return {
+            "ok": True,
+            "app_url": app_url,
+            "logs": logs,
+            "manual_action_required": True,
+            "message": (
+                "Resource prerequisites are ready. Complete CI/CD binding in Azure Deployment Center "
+                "using GitHub Actions for this Web App."
+            ),
+        }
+
+    app_url = f"https://{webapp_name}.azurewebsites.net"
+    return {"ok": True, "app_url": app_url, "logs": logs, "message": "Azure publish completed."}
+
+
 def _get_publish_queue_client() -> QueueClient:
     conn = (settings.PUBLISH_QUEUE_CONNECTION_STRING or "").strip()
     if not conn:
@@ -939,6 +1130,31 @@ def start_publish_job(request, session_id: int):
         payload=job_payload,
         logs="Job queued from Django publish page.",
     )
+
+    if getattr(settings, "AZURE_PUBLISH_USE_MANAGED_IDENTITY", False):
+        job.status = PublishJob.STATUS_RUNNING
+        job.logs = "Managed identity publish started from Django."
+        job.save(update_fields=["status", "logs", "updated_at"])
+        try:
+            result = _run_publish_via_managed_identity(project, job_payload)
+            result_logs = result.get("logs", [])
+            if result_logs:
+                job.logs = f"{job.logs}\n" + "\n".join(str(line) for line in result_logs)
+            if result.get("app_url"):
+                job.result_url = str(result.get("app_url"))
+            if result.get("ok"):
+                job.status = PublishJob.STATUS_SUCCESS
+                if result.get("manual_action_required"):
+                    job.logs = f"{job.logs}\nManual action required: configure Deployment Center GitHub binding."
+            else:
+                job.status = PublishJob.STATUS_FAILED
+                job.error_message = str(result.get("error") or "Managed identity publish failed.")
+        except Exception as exc:
+            job.status = PublishJob.STATUS_FAILED
+            job.error_message = f"Managed identity publish failed: {exc}"
+            job.logs = f"{job.logs}\n{job.error_message}".strip()
+        job.save(update_fields=["status", "logs", "result_url", "error_message", "updated_at"])
+        return JsonResponse({"ok": True, "job": _publish_job_json(job)})
 
     try:
         _enqueue_publish_job(job)

@@ -4,3 +4,4 @@ openai>=1.40.0
 gunicorn>=22.0.0
 whitenoise>=6.8.2
 azure-storage-queue>=12.10.0
+azure-identity>=1.17.1
