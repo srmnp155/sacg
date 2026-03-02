@@ -1057,9 +1057,11 @@ def publish_session_to_azure(request, session_id: int):
         return JsonResponse({"error": f"Azure publish failed: {exc}"}, status=500)
 
 
-@login_required
 @require_http_methods(["POST"])
 def start_publish_job(request, session_id: int):
+    if not request.user.is_authenticated:
+        return JsonResponse({"ok": False, "error": "Authentication required. Please login again."}, status=401)
+
     session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
     project = session.generated_projects.order_by("-created_at").first()
     if not project:
@@ -1128,9 +1130,11 @@ def start_publish_job(request, session_id: int):
     return JsonResponse({"ok": True, "job": _publish_job_json(job)})
 
 
-@login_required
 @require_http_methods(["GET"])
 def publish_job_status(request, job_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({"ok": False, "error": "Authentication required. Please login again."}, status=401)
+
     job = get_object_or_404(PublishJob, pk=job_id, user=request.user)
     return JsonResponse({"ok": True, "job": _publish_job_json(job)})
 
