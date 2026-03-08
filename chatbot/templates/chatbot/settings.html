@@ -10,15 +10,15 @@
     <form method="post" style="margin-bottom:18px;">
         {% csrf_token %}
         <div class="form-row">
-            <label for="deployment_mode">Deployment Mode</label>
-            <select
-                id="deployment_mode"
-                name="deployment_mode"
-                style="width:100%;padding:10px 12px;border:1px solid #ced6e4;border-radius:10px;font-size:1rem;"
-            >
-                <option value="vscode" {% if deployment_mode == "vscode" %}selected{% endif %}>VS Code</option>
-                <option value="azure_app_service" {% if deployment_mode == "azure_app_service" %}selected{% endif %}>Azure App Service</option>
-            </select>
+            <label style="display:block;">Deployment Mode</label>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                <input type="radio" name="deployment_mode" value="vscode" {% if deployment_mode == "vscode" %}checked{% endif %}>
+                VS Code
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;">
+                <input type="radio" name="deployment_mode" value="azure_app_service" {% if deployment_mode == "azure_app_service" %}checked{% endif %}>
+                Azure App Service
+            </label>
         </div>
         <button class="button" type="submit">Save</button>
     </form>
@@ -40,7 +40,7 @@
                     <li><strong>Chat:</strong> generate/update code in a session.</li>
                     <li><strong>Test:</strong> inspect and run saved session files.</li>
                     <li><strong>GitHub:</strong> push session code to your GitHub repository.</li>
-                    <li><strong>Publish:</strong> use ZIP/external git deployment options from publish page.</li>
+                    <li><strong>Publish:</strong> use ZIP/GitHub deployment options from publish page.</li>
                 </ul>
             </div>
         </div>

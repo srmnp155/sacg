@@ -726,18 +726,7 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
         _arm_request("PUT", source_url, token, source_payload)
         logs.append("External Git deployment source configured.")
     else:
-        app_url = f"https://{webapp_name}.azurewebsites.net"
-        logs.append("Git CI/CD selected; manual Deployment Center binding is required.")
-        return {
-            "ok": True,
-            "app_url": app_url,
-            "logs": logs,
-            "manual_action_required": True,
-            "message": (
-                "Resource prerequisites are ready. Complete CI/CD binding in Azure Deployment Center "
-                "using GitHub Actions for this Web App."
-            ),
-        }
+        return {"ok": False, "error": "Invalid deployment mode.", "logs": logs}
 
     app_url = f"https://{webapp_name}.azurewebsites.net"
     return {"ok": True, "app_url": app_url, "logs": logs, "message": "Azure publish completed."}
@@ -784,10 +773,10 @@ def publish_session_to_azure(request, session_id: int):
     repo_url = str(payload.get("repo_url") or "").strip()
     repo_branch = str(payload.get("repo_branch") or "").strip() or "main"
 
-    valid_modes = {"zip", "external_git", "git_cicd"}
+    valid_modes = {"zip", "external_git"}
     if deployment_mode not in valid_modes:
         return JsonResponse({"error": "Invalid deployment mode."}, status=400)
-    if deployment_mode in {"external_git", "git_cicd"} and not repo_url:
+    if deployment_mode == "external_git" and not repo_url:
         return JsonResponse({"error": "repo_url is required for git deployment modes."}, status=400)
 
     required = {
@@ -972,37 +961,12 @@ def publish_session_to_azure(request, session_id: int):
                     status=502,
                 )
         else:
-            # CI/CD linkage usually requires an interactive user context (GitHub authorization).
-            # Service principal auth can provision Azure resources but often cannot finalize GitHub Actions binding.
-            steps_log.append(
-                "git ci/cd mode selected: resource prerequisites completed; manual GitHub/App Service linkage required"
-            )
-            app_url = f"https://{webapp_name}.azurewebsites.net"
-            return JsonResponse(
-                {
-                    "ok": True,
-                    "message": (
-                        "Azure app prerequisites are ready. Complete CI/CD binding in Azure Deployment Center "
-                        "using GitHub Actions for this Web App."
-                    ),
-                    "app_url": app_url,
-                    "logs": steps_log,
-                    "manual_action_required": True,
-                    "next_steps": [
-                        "Open Azure Portal -> App Service -> Deployment Center.",
-                        "Choose GitHub as source and authorize GitHub account.",
-                        f"Select repository URL: {repo_url}",
-                        f"Select branch: {repo_branch}",
-                        "Save and let GitHub Actions workflow run.",
-                    ],
-                }
-            )
+            return JsonResponse({"error": "Invalid deployment mode."}, status=400)
 
         app_url = f"https://{webapp_name}.azurewebsites.net"
         mode_msg = {
             "zip": "ZIP deployment completed",
             "external_git": "External Git deployment configured",
-            "git_cicd": "Git CI/CD deployment configured",
         }.get(deployment_mode, "Publish completed")
         return JsonResponse(
             {
@@ -1034,7 +998,7 @@ def start_publish_job(request, session_id: int):
         return JsonResponse({"error": "Invalid JSON payload."}, status=400)
 
     deployment_mode = str(payload.get("deployment_mode") or "zip").strip().lower()
-    if deployment_mode not in {"zip", "external_git", "git_cicd"}:
+    if deployment_mode not in {"zip", "external_git"}:
         return JsonResponse({"error": "Invalid deployment mode."}, status=400)
 
     job_payload = {
@@ -1077,8 +1041,6 @@ def start_publish_job(request, session_id: int):
             job.result_url = str(result.get("app_url"))
         if result.get("ok"):
             job.status = PublishJob.STATUS_SUCCESS
-            if result.get("manual_action_required"):
-                job.logs = f"{job.logs}\nManual action required: configure Deployment Center GitHub binding."
         else:
             job.status = PublishJob.STATUS_FAILED
             job.error_message = str(result.get("error") or "Managed identity publish failed.")
@@ -1100,150 +1062,11 @@ def publish_job_status(request, job_id):
     return JsonResponse({"ok": True, "job": _publish_job_json(job)})
 
 
-def _pick_default_entry_file(files: list[dict]) -> str | None:
-    preferred = (
-        "main.py",
-        "app.py",
-        "run.py",
-        "manage.py",
-        "main.js",
-        "index.js",
-        "main.ts",
-        "main.go",
-        "main.java",
-        "main.c",
-        "main.cpp",
-        "main.cs",
-        "main.rb",
-        "main.php",
-        "main.sh",
-        "main.ps1",
-    )
-    paths = [str(item.get("path", "")).strip() for item in files if str(item.get("path", "")).strip()]
-    for name in preferred:
-        if name in paths:
-            return name
-    runnable_exts = (
-        ".py",
-        ".js",
-        ".ts",
-        ".java",
-        ".c",
-        ".cpp",
-        ".go",
-        ".rb",
-        ".php",
-        ".pl",
-        ".sh",
-        ".ps1",
-        ".rs",
-    )
-    for path in paths:
-        if path.lower().endswith(runnable_exts):
-            return path
-    return None
-
-
 def _find_cmd(candidates: tuple[str, ...]) -> str | None:
     for cmd in candidates:
         if shutil.which(cmd):
             return cmd
     return None
-
-
-def _resolve_run_steps(entry_path: str, entry_abs: Path, base_dir: Path) -> tuple[list[list[str]], str]:
-    ext = entry_abs.suffix.lower()
-    steps: list[list[str]] = []
-    language = "Unknown"
-
-    if ext == ".py":
-        steps = [[sys.executable, str(entry_abs)]]
-        language = "Python"
-    elif ext == ".js":
-        node = _find_cmd(("node",))
-        if not node:
-            raise ValueError("Node.js runtime not found.")
-        steps = [[node, str(entry_abs)]]
-        language = "JavaScript"
-    elif ext == ".ts":
-        ts_node = _find_cmd(("ts-node",))
-        deno = _find_cmd(("deno",))
-        if ts_node:
-            steps = [[ts_node, str(entry_abs)]]
-        elif deno:
-            steps = [[deno, "run", str(entry_abs)]]
-        else:
-            raise ValueError("TypeScript runtime not found (ts-node or deno required).")
-        language = "TypeScript"
-    elif ext == ".java":
-        javac = _find_cmd(("javac",))
-        java = _find_cmd(("java",))
-        if not javac or not java:
-            raise ValueError("Java runtime not found (javac/java required).")
-        class_name = entry_abs.stem
-        steps = [[javac, str(entry_abs)], [java, "-cp", str(entry_abs.parent), class_name]]
-        language = "Java"
-    elif ext == ".c":
-        cc = _find_cmd(("gcc", "clang", "cc"))
-        if not cc:
-            raise ValueError("C compiler not found (gcc/clang/cc required).")
-        out_file = base_dir / "run_c_exec"
-        steps = [[cc, str(entry_abs), "-o", str(out_file)], [str(out_file)]]
-        language = "C"
-    elif ext == ".cpp":
-        cxx = _find_cmd(("g++", "clang++", "c++"))
-        if not cxx:
-            raise ValueError("C++ compiler not found (g++/clang++/c++ required).")
-        out_file = base_dir / "run_cpp_exec"
-        steps = [[cxx, str(entry_abs), "-o", str(out_file)], [str(out_file)]]
-        language = "C++"
-    elif ext == ".go":
-        go = _find_cmd(("go",))
-        if not go:
-            raise ValueError("Go runtime not found.")
-        steps = [[go, "run", str(entry_abs)]]
-        language = "Go"
-    elif ext == ".rb":
-        ruby = _find_cmd(("ruby",))
-        if not ruby:
-            raise ValueError("Ruby runtime not found.")
-        steps = [[ruby, str(entry_abs)]]
-        language = "Ruby"
-    elif ext == ".php":
-        php = _find_cmd(("php",))
-        if not php:
-            raise ValueError("PHP runtime not found.")
-        steps = [[php, str(entry_abs)]]
-        language = "PHP"
-    elif ext == ".pl":
-        perl = _find_cmd(("perl",))
-        if not perl:
-            raise ValueError("Perl runtime not found.")
-        steps = [[perl, str(entry_abs)]]
-        language = "Perl"
-    elif ext == ".sh":
-        sh_cmd = _find_cmd(("bash", "sh"))
-        if not sh_cmd:
-            raise ValueError("Shell runtime not found (bash/sh required).")
-        steps = [[sh_cmd, str(entry_abs)]]
-        language = "Shell"
-    elif ext == ".ps1":
-        pwsh = _find_cmd(("pwsh", "powershell"))
-        if not pwsh:
-            raise ValueError("PowerShell runtime not found (pwsh/powershell required).")
-        steps = [[pwsh, "-ExecutionPolicy", "Bypass", "-File", str(entry_abs)]]
-        language = "PowerShell"
-    elif ext == ".rs":
-        rustc = _find_cmd(("rustc",))
-        if not rustc:
-            raise ValueError("Rust compiler not found.")
-        out_file = base_dir / "run_rust_exec"
-        steps = [[rustc, str(entry_abs), "-o", str(out_file)], [str(out_file)]]
-        language = "Rust"
-    else:
-        raise ValueError(f"Unsupported file type '{ext}'. Select a runnable source file.")
-
-    return steps, language
 
 
 def _github_request(
@@ -1345,100 +1168,6 @@ def session_test_ide(request, session_id: int):
             "download_url": reverse("download_session_project", args=[session.id]) if project else "",
         },
     )
-
-
-@login_required
-@require_http_methods(["POST"])
-def run_session_project(request, session_id: int):
-    session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
-    project = session.generated_projects.order_by("-created_at").first()
-    if not project:
-        return JsonResponse({"error": "No generated project found for this session."}, status=404)
-
-    files = project.files if isinstance(project.files, list) else []
-    file_paths = [str(item.get("path", "")).strip() for item in files if str(item.get("path", "")).strip()]
-
-    stdin_data = ""
-    timeout_seconds = 30
-    requested_entry = ""
-    try:
-        if request.body:
-            payload = json.loads(request.body.decode("utf-8"))
-            stdin_data = str(payload.get("stdin") or "")
-            requested_timeout = int(payload.get("timeout") or timeout_seconds)
-            timeout_seconds = min(max(requested_timeout, 1), 60)
-            requested_entry = str(payload.get("entry_path") or "").strip()
-    except (ValueError, TypeError, json.JSONDecodeError):
-        stdin_data = ""
-        timeout_seconds = 30
-        requested_entry = ""
-
-    entry_path = requested_entry or _pick_default_entry_file(files)
-    if not entry_path:
-        return JsonResponse({"error": "No runnable file found. Select a source file and run again."}, status=400)
-    if entry_path not in file_paths:
-        return JsonResponse({"error": "Selected entry file is not part of saved project files."}, status=400)
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="srm_ide_") as temp_dir:
-            base = Path(temp_dir)
-            for item in files:
-                raw_path = str(item.get("path", "")).strip()
-                content = str(item.get("content", ""))
-                if not raw_path:
-                    continue
-                rel = _safe_relative_path(raw_path)
-                full_path = base / rel
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_text(content, encoding="utf-8")
-
-            run_target = base / _safe_relative_path(entry_path)
-            steps, language = _resolve_run_steps(entry_path, run_target, base)
-
-            final_return_code = 0
-            output_parts: list[str] = []
-            for idx, step in enumerate(steps):
-                is_last = idx == len(steps) - 1
-                completed = subprocess.run(
-                    step,
-                    cwd=str(base),
-                    capture_output=True,
-                    text=True,
-                    input=stdin_data if is_last else None,
-                    timeout=timeout_seconds,
-                )
-                step_output = (completed.stdout or "") + (completed.stderr or "")
-                if step_output.strip():
-                    output_parts.append(step_output)
-                final_return_code = completed.returncode
-                if completed.returncode != 0:
-                    break
-
-            output = "\n".join(part for part in output_parts if part.strip())
-            if not output.strip():
-                output = "Execution completed with no output."
-            return JsonResponse(
-                {
-                    "return_code": final_return_code,
-                    "entry_file": entry_path,
-                    "language": language,
-                    "output": output,
-                }
-            )
-    except ValueError as exc:
-        return JsonResponse({"error": str(exc)}, status=400)
-    except subprocess.TimeoutExpired:
-        return JsonResponse(
-            {
-                "error": (
-                    f"Execution timed out after {timeout_seconds} seconds. "
-                    "If your code needs input(), provide sample input in the IDE input box."
-                )
-            },
-            status=408,
-        )
-    except Exception as exc:
-        return JsonResponse({"error": f"Execution failed: {exc}"}, status=500)
 
 
 @login_required

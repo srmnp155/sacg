@@ -92,11 +92,6 @@
         {% endif %}
         <button class="button" type="button" id="github-btn">GitHub</button>
         <a class="button" href="{% url 'session_publish_page' session.id %}" style="text-decoration:none;">Publish</a>
-        {% if project %}
-            <button class="button" type="button" id="run-btn">Run</button>
-        {% else %}
-            <button class="button" type="button" disabled>Run</button>
-        {% endif %}
     </div>
 
     {% if not project %}
@@ -113,14 +108,7 @@
                     </div>
                 </div>
                 <textarea class="code-panel" id="code-panel"></textarea>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-                    <textarea id="stdin-input" placeholder="Optional program input (for input())" style="flex:1;min-height:80px;border:1px solid #ced6e4;border-radius:10px;padding:10px;font-family:Consolas, 'Courier New', monospace;font-size:0.84rem;"></textarea>
-                    <div style="width:140px;">
-                        <label for="timeout-input" style="display:block;margin-bottom:6px;font-weight:700;">Timeout (sec)</label>
-                        <input id="timeout-input" type="number" min="1" max="60" value="30" style="width:100%;padding:8px;border:1px solid #ced6e4;border-radius:8px;">
-                    </div>
-                </div>
-                <div class="output-panel" id="output-panel">Run output will appear here.</div>
+                <div class="output-panel" id="output-panel">Status output will appear here.</div>
             </div>
         </div>
     {% endif %}
@@ -141,12 +129,9 @@
     const selectedFile = document.getElementById("selected-file");
     const codePanel = document.getElementById("code-panel");
     const outputPanel = document.getElementById("output-panel");
-    const runBtn = document.getElementById("run-btn");
     const githubBtn = document.getElementById("github-btn");
     const saveBtn = document.getElementById("save-btn");
     const saveStatus = document.getElementById("save-status");
-    const stdinInput = document.getElementById("stdin-input");
-    const timeoutInput = document.getElementById("timeout-input");
     let activePath = null;
     let dirty = false;
 
@@ -226,33 +211,6 @@
             saveStatus.textContent = "Saved";
         } catch (error) {
             saveStatus.textContent = `Save error: ${error}`;
-        }
-    });
-
-    runBtn.addEventListener("click", async () => {
-        outputPanel.textContent = "Running...";
-        try {
-            const response = await fetch("{% url 'run_session_project' session.id %}", {
-                method: "POST",
-                headers: {
-                    "X-CSRFToken": getCookie("csrftoken"),
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    stdin: stdinInput.value || "",
-                    timeout: Number(timeoutInput.value || 30),
-                    entry_path: activePath || "",
-                }),
-            });
-            const data = await response.json();
-            if (!response.ok) {
-                outputPanel.textContent = data.error || "Execution failed.";
-                return;
-            }
-            outputPanel.textContent =
-                `Language: ${data.language || "Unknown"}\nEntry: ${data.entry_file}\nReturn code: ${data.return_code}\n\n${data.output}`;
-        } catch (error) {
-            outputPanel.textContent = `Network error: ${error}`;
         }
     });
 
