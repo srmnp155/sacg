@@ -144,36 +144,11 @@
     </div>
 
     <div class="tab-row">
-        <button class="tab-btn active" type="button" data-tab="mail">Mail</button>
-        <button class="tab-btn" type="button" data-tab="azure">Azure</button>
+        <button class="tab-btn active" type="button" data-tab="azure">Azure</button>
         <button class="tab-btn" type="button" data-tab="aws">AWS</button>
     </div>
 
-    <div id="panel-mail" class="panel active">
-        {% if not project %}
-            <p style="margin:0;color:#9f3919;">Generate code in this session first, then send it by mail.</p>
-        {% else %}
-            <form id="mail-form" method="post" action="{% url 'send_session_code_email' session.id %}">
-                {% csrf_token %}
-                <div class="field">
-                    <label for="to_email">To Email</label>
-                    <input id="to_email" name="to_email" type="email" placeholder="recipient@example.com" required>
-                </div>
-                <div class="field">
-                    <label for="subject">Subject</label>
-                    <input id="subject" name="subject" type="text" value="Saved Code - Session {{ session.id }}">
-                </div>
-                <div class="field">
-                    <label for="body">Body</label>
-                    <textarea id="body" name="body" rows="6">Please find the attached saved code ZIP from SRM AI Code Generator.</textarea>
-                </div>
-                <button class="button" type="submit">Send</button>
-                <div class="status" id="mail-status"></div>
-            </form>
-        {% endif %}
-    </div>
-
-    <div id="panel-azure" class="panel">
+    <div id="panel-azure" class="panel active">
         {% if not project %}
             <p style="margin:0;color:#9f3919;">Generate code in this session first, then publish to Azure.</p>
         {% else %}
@@ -279,7 +254,6 @@
 <script>
     const tabButtons = document.querySelectorAll(".tab-btn");
     const panels = {
-        mail: document.getElementById("panel-mail"),
         azure: document.getElementById("panel-azure"),
         aws: document.getElementById("panel-aws"),
     };
@@ -302,8 +276,6 @@
     };
 
     const githubBtn = document.getElementById("github-btn");
-    const mailForm = document.getElementById("mail-form");
-    const mailStatus = document.getElementById("mail-status");
     const azureForm = document.getElementById("azure-form");
     const azureStatus = document.getElementById("azure-status");
     const azureGitFields = document.getElementById("azure-git-fields");
@@ -373,31 +345,6 @@
             } finally {
                 githubBtn.disabled = false;
                 githubBtn.textContent = oldText;
-            }
-        });
-    }
-
-    if (mailForm && mailStatus) {
-        mailForm.addEventListener("submit", async (event) => {
-            event.preventDefault();
-            mailStatus.textContent = "Sending...";
-
-            try {
-                const response = await fetch(mailForm.action, {
-                    method: "POST",
-                    headers: {
-                        "X-CSRFToken": getCookie("csrftoken"),
-                    },
-                    body: new FormData(mailForm),
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    mailStatus.textContent = data.error || "Email send failed.";
-                    return;
-                }
-                mailStatus.textContent = data.message || "Email sent.";
-            } catch (error) {
-                mailStatus.textContent = `Email send error: ${error}`;
             }
         });
     }

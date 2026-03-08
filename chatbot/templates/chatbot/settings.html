@@ -1,11 +1,11 @@
 {% extends "chatbot/base.html" %}
 
-{% block title %}Settings{% endblock %}
+{% block title %}Info{% endblock %}
 
 {% block content %}
 <section class="card">
-    <h2 style="margin-top:0;">Settings</h2>
-    <p style="margin:0 0 14px;color:#5c6b80;">Choose your deployment mode and review instructions.</p>
+    <h2 style="margin-top:0;">Info & Instructions</h2>
+    <p style="margin:0 0 14px;color:#5c6b80;">Choose deployment mode and review setup instructions.</p>
 
     <form method="post" style="margin-bottom:18px;">
         {% csrf_token %}

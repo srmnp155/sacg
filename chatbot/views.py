@@ -22,7 +22,6 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
-from django.core.mail import EmailMessage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -542,44 +541,6 @@ def session_publish_page(request, session_id: int):
             "test_url": reverse("session_test_ide", args=[session.id]) if project else "",
         },
     )
-
-
-@login_required
-@require_http_methods(["POST"])
-def send_session_code_email(request, session_id: int):
-    session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
-    project = session.generated_projects.order_by("-created_at").first()
-    if not project:
-        return JsonResponse({"error": "No saved code found in this session."}, status=404)
-
-    to_email = str(request.POST.get("to_email") or "").strip()
-    subject = str(request.POST.get("subject") or "").strip() or f"Saved Code - Session {session.id}"
-    body = str(request.POST.get("body") or "").strip() or "Attached is the requested saved code zip."
-    if not to_email:
-        return JsonResponse({"error": "Recipient email is required."}, status=400)
-
-    from_email = (
-        getattr(settings, "DEFAULT_FROM_EMAIL", "").strip()
-        or getattr(settings, "EMAIL_HOST_USER", "").strip()
-        or "no-reply@srm-ai.local"
-    )
-    attachment_name = f"{project.project_name}.zip"
-    attachment_bytes = _build_zip_bytes(project)
-    email = EmailMessage(
-        subject=subject,
-        body=body,
-        from_email=from_email,
-        to=[to_email],
-    )
-    email.attach(attachment_name, attachment_bytes, "application/zip")
-    try:
-        sent = email.send(fail_silently=False)
-    except Exception as exc:
-        return JsonResponse({"error": f"Email send failed: {exc}"}, status=502)
-    if sent < 1:
-        return JsonResponse({"error": "Email was not sent."}, status=502)
-
-    return JsonResponse({"ok": True, "message": f"Email sent to {to_email} with {attachment_name}."})
 
 
 def _run_process(command: list[str], timeout: int = 300) -> tuple[int, str]:

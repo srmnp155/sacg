@@ -5,7 +5,7 @@ This project is a Django chatbot/code-generator with:
 - Azure OpenAI (endpoint + API key)
 - Session-based saved code
 - Download/Test/GitHub actions
-- Publish page (Mail, Azure, AWS tabs)
+- Publish page (Azure, AWS tabs)
 
 ## Local Run
 
