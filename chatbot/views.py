@@ -675,7 +675,17 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
                 f"{base}/resourceGroups/{resource_group}/providers/Microsoft.Web/"
                 f"staticSites/{static_web_app_name}?api-version={api_version}"
             )
-            swa_payload = {"location": region, "sku": {"name": "Free", "tier": "Free"}}
+            swa_payload = {
+                "location": region,
+                "sku": {"name": "Free", "tier": "Free"},
+                "properties": {
+                    "repositoryUrl": repo_url,
+                    "branch": repo_branch,
+                    "provider": "GitHub",
+                    "stagingEnvironmentPolicy": "Enabled",
+                    "allowConfigFileUpdates": True,
+                },
+            }
             response = _arm_request("PUT", swa_url_api, token, swa_payload, timeout=900)
             default_hostname = (
                 ((response or {}).get("properties") or {}).get("defaultHostname")
