@@ -518,6 +518,27 @@ def _build_zip_response(project: GeneratedProject) -> HttpResponse:
     return response
 
 
+def _detect_runtime_from_project(project: GeneratedProject | None) -> str:
+    if not project or not isinstance(project.files, list):
+        return "PYTHON:3.11"
+
+    paths = [str(item.get("path", "")).strip().lower() for item in project.files if str(item.get("path", "")).strip()]
+    if not paths:
+        return "PYTHON:3.11"
+
+    if any(path.endswith((".py",)) for path in paths) or "manage.py" in paths:
+        return "PYTHON:3.11"
+    if any(path.endswith((".js", ".mjs", ".cjs")) for path in paths) or "package.json" in paths:
+        return "NODE:20-lts"
+    if any(path.endswith((".csproj", ".sln", ".cs")) for path in paths):
+        return "DOTNETCORE:8.0"
+    if any(path.endswith(".java") for path in paths) or "pom.xml" in paths or "build.gradle" in paths:
+        return "JAVA:17-java17"
+    if any(path.endswith(".php") for path in paths):
+        return "PHP:8.2"
+    return "PYTHON:3.11"
+
+
 @login_required
 def download_session_project(request, session_id: int):
     session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
@@ -537,6 +558,7 @@ def session_publish_page(request, session_id: int):
         {
             "session": session,
             "project": project,
+            "detected_runtime": _detect_runtime_from_project(project),
             "download_url": reverse("download_session_project", args=[session.id]) if project else "",
             "test_url": reverse("session_test_ide", args=[session.id]) if project else "",
         },
@@ -758,15 +780,12 @@ def publish_session_to_azure(request, session_id: int):
     except (ValueError, UnicodeDecodeError):
         return JsonResponse({"error": "Invalid JSON payload."}, status=400)
 
-    tenant_id = str(payload.get("tenant_id") or "").strip()
-    client_id = str(payload.get("client_id") or "").strip()
-    client_secret = str(payload.get("client_secret") or "").strip()
     subscription_id = str(payload.get("subscription_id") or "").strip()
     resource_group = str(payload.get("resource_group") or "").strip()
     plan_name = str(payload.get("app_service_plan") or "").strip()
     webapp_name = str(payload.get("webapp_name") or "").strip()
     region = str(payload.get("region") or "").strip() or "centralindia"
-    runtime = str(payload.get("runtime") or "").strip() or "PYTHON:3.11"
+    runtime = str(payload.get("runtime") or "").strip() or _detect_runtime_from_project(project)
     startup_command = str(payload.get("startup_command") or "").strip()
     auto_create = bool(payload.get("auto_create", False))
     deployment_mode = str(payload.get("deployment_mode") or "zip").strip().lower()
@@ -779,205 +798,24 @@ def publish_session_to_azure(request, session_id: int):
     if deployment_mode == "external_git" and not repo_url:
         return JsonResponse({"error": "repo_url is required for git deployment modes."}, status=400)
 
-    required = {
-        "tenant_id": tenant_id,
-        "client_id": client_id,
-        "client_secret": client_secret,
+    job_payload = {
+        "deployment_mode": deployment_mode,
         "subscription_id": subscription_id,
         "resource_group": resource_group,
         "app_service_plan": plan_name,
         "webapp_name": webapp_name,
+        "region": region,
+        "runtime": runtime,
+        "startup_command": startup_command,
+        "auto_create": auto_create,
+        "repo_url": repo_url,
+        "repo_branch": repo_branch,
     }
-    missing = [name for name, value in required.items() if not value]
-    if missing:
-        return JsonResponse({"error": f"Missing required fields: {', '.join(missing)}"}, status=400)
-
-    az_cmd = _find_cmd(("az.cmd", "az"))
-    if not az_cmd:
-        return JsonResponse({"error": "Azure CLI not found. Install Azure CLI and try again."}, status=400)
-
-    steps_log: list[str] = []
 
     try:
-        code, output = _run_process(
-            [
-                az_cmd,
-                "login",
-                "--service-principal",
-                "--username",
-                client_id,
-                "--password",
-                client_secret,
-                "--tenant",
-                tenant_id,
-            ]
-        )
-        steps_log.append("az login --service-principal")
-        if code != 0:
-            return JsonResponse({"error": "Azure login failed.", "logs": steps_log + [output]}, status=502)
-
-        code, output = _run_process([az_cmd, "account", "set", "--subscription", subscription_id])
-        steps_log.append(f"az account set --subscription {subscription_id}")
-        if code != 0:
-            return JsonResponse({"error": "Failed to select Azure subscription.", "logs": steps_log + [output]}, status=502)
-
-        if auto_create:
-            code, output = _run_process(
-                [az_cmd, "group", "create", "--name", resource_group, "--location", region]
-            )
-            steps_log.append(f"az group create --name {resource_group} --location {region}")
-            if code != 0:
-                return JsonResponse({"error": "Failed to create resource group.", "logs": steps_log + [output]}, status=502)
-
-            code, output = _run_process(
-                [
-                    az_cmd,
-                    "appservice",
-                    "plan",
-                    "create",
-                    "--name",
-                    plan_name,
-                    "--resource-group",
-                    resource_group,
-                    "--is-linux",
-                    "--sku",
-                    "B1",
-                ]
-            )
-            steps_log.append(f"az appservice plan create --name {plan_name}")
-            if code != 0:
-                return JsonResponse({"error": "Failed to create App Service Plan.", "logs": steps_log + [output]}, status=502)
-
-            code, output = _run_process(
-                [
-                    az_cmd,
-                    "webapp",
-                    "create",
-                    "--name",
-                    webapp_name,
-                    "--resource-group",
-                    resource_group,
-                    "--plan",
-                    plan_name,
-                    "--runtime",
-                    runtime,
-                ]
-            )
-            steps_log.append(f"az webapp create --name {webapp_name} --runtime {runtime}")
-            if code != 0:
-                return JsonResponse({"error": "Failed to create Web App.", "logs": steps_log + [output]}, status=502)
-
-        if startup_command:
-            code, output = _run_process(
-                [
-                    az_cmd,
-                    "webapp",
-                    "config",
-                    "set",
-                    "--resource-group",
-                    resource_group,
-                    "--name",
-                    webapp_name,
-                    "--startup-file",
-                    startup_command,
-                ]
-            )
-            steps_log.append(f"az webapp config set --name {webapp_name} --startup-file <provided>")
-            if code != 0:
-                return JsonResponse({"error": "Failed to set startup command.", "logs": steps_log + [output]}, status=502)
-
-        if deployment_mode == "zip":
-            with tempfile.TemporaryDirectory(prefix="srm_publish_") as temp_dir:
-                zip_path = Path(temp_dir) / f"{project.project_name}.zip"
-                zip_path.write_bytes(_build_zip_bytes(project))
-
-                code, output = _run_process(
-                    [
-                        az_cmd,
-                        "webapp",
-                        "deploy",
-                        "--resource-group",
-                        resource_group,
-                        "--name",
-                        webapp_name,
-                        "--src-path",
-                        str(zip_path),
-                        "--type",
-                        "zip",
-                    ],
-                    timeout=900,
-                )
-                steps_log.append(f"az webapp deploy --name {webapp_name} --type zip")
-                if code != 0:
-                    code2, output2 = _run_process(
-                        [
-                            az_cmd,
-                            "webapp",
-                            "deployment",
-                            "source",
-                            "config-zip",
-                            "--resource-group",
-                            resource_group,
-                            "--name",
-                            webapp_name,
-                            "--src",
-                            str(zip_path),
-                        ],
-                        timeout=900,
-                    )
-                    steps_log.append(f"az webapp deployment source config-zip --name {webapp_name}")
-                    if code2 != 0:
-                        return JsonResponse(
-                            {"error": "Azure zip deploy failed.", "logs": steps_log + [output, output2]},
-                            status=502,
-                        )
-        elif deployment_mode == "external_git":
-            cmd = [
-                az_cmd,
-                "webapp",
-                "deployment",
-                "source",
-                "config",
-                "--resource-group",
-                resource_group,
-                "--name",
-                webapp_name,
-                "--repo-url",
-                repo_url,
-                "--branch",
-                repo_branch,
-            ]
-            # Azure CLI treats --manual-integration as a switch flag (no true/false value).
-            cmd.append("--manual-integration")
-
-            code, output = _run_process(cmd, timeout=900)
-            mode_label = "external git"
-            steps_log.append(
-                f"az webapp deployment source config --name {webapp_name} --mode {mode_label}"
-            )
-            if code != 0:
-                return JsonResponse(
-                    {"error": f"Azure {mode_label} deployment configuration failed.", "logs": steps_log + [output]},
-                    status=502,
-                )
-        else:
-            return JsonResponse({"error": "Invalid deployment mode."}, status=400)
-
-        app_url = f"https://{webapp_name}.azurewebsites.net"
-        mode_msg = {
-            "zip": "ZIP deployment completed",
-            "external_git": "External Git deployment configured",
-        }.get(deployment_mode, "Publish completed")
-        return JsonResponse(
-            {
-                "ok": True,
-                "message": f"{mode_msg} for {webapp_name}.",
-                "app_url": app_url,
-                "logs": steps_log,
-            }
-        )
-    except subprocess.TimeoutExpired:
-        return JsonResponse({"error": "Azure publish timed out."}, status=504)
+        result = _run_publish_via_managed_identity(project, job_payload)
+        status = 200 if result.get("ok") else 502
+        return JsonResponse(result, status=status)
     except Exception as exc:
         return JsonResponse({"error": f"Azure publish failed: {exc}"}, status=500)
 
@@ -1009,15 +847,12 @@ def start_publish_job(request, session_id: int):
         "app_service_plan": str(payload.get("app_service_plan") or "").strip(),
         "webapp_name": str(payload.get("webapp_name") or "").strip(),
         "region": str(payload.get("region") or "").strip() or "centralindia",
-        "runtime": str(payload.get("runtime") or "").strip() or "PYTHON:3.11",
+        "runtime": str(payload.get("runtime") or "").strip() or _detect_runtime_from_project(project),
         "startup_command": str(payload.get("startup_command") or "").strip(),
         "auto_create": bool(payload.get("auto_create", False)),
         "repo_url": str(payload.get("repo_url") or "").strip(),
         "repo_branch": str(payload.get("repo_branch") or "").strip() or "main",
-        "tenant_id": str(payload.get("tenant_id") or "").strip(),
         "subscription_id": str(payload.get("subscription_id") or "").strip(),
-        "client_id": str(payload.get("client_id") or "").strip(),
-        "client_secret": str(payload.get("client_secret") or "").strip(),
     }
 
     job = PublishJob.objects.create(

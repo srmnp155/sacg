@@ -180,25 +180,9 @@
                     </div>
                 </div>
 
-                <div class="grid-two">
-                    <div class="field">
-                        <label for="az_tenant_id">Tenant ID (optional, service principal mode)</label>
-                        <input id="az_tenant_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
-                    </div>
-                    <div class="field">
-                        <label for="az_subscription_id">Subscription ID</label>
-                        <input id="az_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required>
-                    </div>
-                </div>
-                <div class="grid-two">
-                    <div class="field">
-                        <label for="az_client_id">Client ID (optional, service principal mode)</label>
-                        <input id="az_client_id" type="text">
-                    </div>
-                    <div class="field">
-                        <label for="az_client_secret">Client Secret (optional, service principal mode)</label>
-                        <input id="az_client_secret" type="password">
-                    </div>
+                <div class="field">
+                    <label for="az_subscription_id">Subscription ID</label>
+                    <input id="az_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required>
                 </div>
                 <div class="grid-two">
                     <div class="field">
@@ -223,7 +207,8 @@
                 <div class="grid-two">
                     <div class="field">
                         <label for="az_runtime">Runtime</label>
-                        <input id="az_runtime" type="text" value="PYTHON:3.11">
+                        <input id="az_runtime" type="text" value="{{ detected_runtime|default:'PYTHON:3.11' }}">
+                        <small style="display:block;margin-top:4px;color:#5c6b80;">Auto-detected from generated code. You can edit if needed.</small>
                     </div>
                     <div class="field">
                         <label for="az_startup">Startup Command (optional)</label>
@@ -362,10 +347,7 @@
             const deploymentMode = getAzureMode();
             const payload = {
                 deployment_mode: deploymentMode,
-                tenant_id: document.getElementById("az_tenant_id").value.trim(),
                 subscription_id: document.getElementById("az_subscription_id").value.trim(),
-                client_id: document.getElementById("az_client_id").value.trim(),
-                client_secret: document.getElementById("az_client_secret").value.trim(),
                 resource_group: document.getElementById("az_resource_group").value.trim(),
                 app_service_plan: document.getElementById("az_plan").value.trim(),
                 webapp_name: document.getElementById("az_webapp").value.trim(),
