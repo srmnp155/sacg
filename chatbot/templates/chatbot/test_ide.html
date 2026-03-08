@@ -51,18 +51,6 @@
         resize: vertical;
     }
 
-    .output-panel {
-        margin-top: 10px;
-        border: 1px solid #ced6e4;
-        border-radius: 10px;
-        background: #fff;
-        padding: 12px;
-        min-height: 130px;
-        white-space: pre-wrap;
-        font-family: Consolas, "Courier New", monospace;
-        font-size: 0.86rem;
-    }
-
     .top-actions {
         display: flex;
         flex-wrap: wrap;
@@ -108,7 +96,6 @@
                     </div>
                 </div>
                 <textarea class="code-panel" id="code-panel"></textarea>
-                <div class="output-panel" id="output-panel">Status output will appear here.</div>
             </div>
         </div>
     {% endif %}
@@ -128,7 +115,6 @@
     const fileList = document.getElementById("file-list");
     const selectedFile = document.getElementById("selected-file");
     const codePanel = document.getElementById("code-panel");
-    const outputPanel = document.getElementById("output-panel");
     const githubBtn = document.getElementById("github-btn");
     const saveBtn = document.getElementById("save-btn");
     const saveStatus = document.getElementById("save-status");
@@ -247,7 +233,6 @@
                     return;
                 }
                 alert(`${second.message}\n${second.repo_url}`);
-                outputPanel.textContent = `GitHub push successful:\n${second.repo_url}`;
                 return;
             }
 
@@ -256,7 +241,6 @@
                 return;
             }
             alert(`${first.message}\n${first.repo_url}`);
-            outputPanel.textContent = `GitHub push successful:\n${first.repo_url}`;
         } catch (error) {
             alert(`GitHub push error: ${error}`);
         } finally {

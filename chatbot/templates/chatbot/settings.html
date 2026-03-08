@@ -4,6 +4,42 @@
 
 {% block content %}
 <section class="card">
+    <style>
+        .mode-options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .mode-option {
+            border: 1px solid #ced6e4;
+            border-radius: 12px;
+            background: #fff;
+            padding: 12px;
+            cursor: pointer;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        }
+        .mode-option input[type="radio"] {
+            margin-top: 3px;
+            accent-color: #cc4b22;
+            transform: scale(1.1);
+        }
+        .mode-title {
+            font-weight: 700;
+            display: block;
+            margin-bottom: 2px;
+        }
+        .mode-note {
+            color: #5c6b80;
+            font-size: 0.9rem;
+        }
+        @media (max-width: 900px) {
+            .mode-options {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
     <h2 style="margin-top:0;">Info & Instructions</h2>
     <p style="margin:0 0 14px;color:#5c6b80;">Choose deployment mode and review setup instructions.</p>
 
@@ -11,14 +47,22 @@
         {% csrf_token %}
         <div class="form-row">
             <label style="display:block;">Deployment Mode</label>
-            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-                <input type="radio" name="deployment_mode" value="vscode" {% if deployment_mode == "vscode" %}checked{% endif %}>
-                VS Code
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;">
-                <input type="radio" name="deployment_mode" value="azure_app_service" {% if deployment_mode == "azure_app_service" %}checked{% endif %}>
-                Azure App Service
-            </label>
+            <div class="mode-options">
+                <label class="mode-option">
+                    <input type="radio" name="deployment_mode" value="vscode" {% if deployment_mode == "vscode" %}checked{% endif %}>
+                    <span>
+                        <span class="mode-title">Local</span>
+                        <span class="mode-note">Run generated projects on your own machine.</span>
+                    </span>
+                </label>
+                <label class="mode-option">
+                    <input type="radio" name="deployment_mode" value="azure_app_service" {% if deployment_mode == "azure_app_service" %}checked{% endif %}>
+                    <span>
+                        <span class="mode-title">Azure App Service</span>
+                        <span class="mode-note">Deploy generated projects to Azure Web App.</span>
+                    </span>
+                </label>
+            </div>
         </div>
         <button class="button" type="submit">Save</button>
     </form>
@@ -26,11 +70,11 @@
     {% if deployment_mode == "vscode" %}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div style="border:1px solid #ced6e4;border-radius:10px;padding:12px;background:#fff;">
-                <h3 style="margin-top:0;">VS Code Prerequisites</h3>
+                <h3 style="margin-top:0;">Local Prerequisites</h3>
                 <ol style="margin:0;padding-left:18px;">
-                    <li>Install VS Code and Python runtime.</li>
+                    <li>Install VS Code (or any IDE) and required runtime.</li>
                     <li>Use chat/test/publish pages to generate and download code ZIP.</li>
-                    <li>Extract project and open folder in VS Code.</li>
+                    <li>Extract project and open folder in your local IDE.</li>
                     <li>Create a virtual environment and install project dependencies.</li>
                 </ol>
             </div>
@@ -65,9 +109,31 @@
             </ol>
         </div>
     {% else %}
-        <div style="border:1px solid #e6c2b8;border-radius:10px;padding:12px;background:#fff7f4;color:#8f2a13;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div style="border:1px solid #ced6e4;border-radius:10px;padding:12px;background:#fff;">
+                <h3 style="margin-top:0;">Azure App Service Prerequisites</h3>
+                <ol style="margin:0;padding-left:18px;">
+                    <li>Create Resource Group and App Service Plan.</li>
+                    <li>Create a Web App (Linux, Python runtime as needed).</li>
+                    <li>Enable Managed Identity on your Django App Service.</li>
+                    <li>Grant RBAC role (<strong>Contributor</strong>) on target Resource Group.</li>
+                    <li>Set required App Settings (`DJANGO_*`, `AZURE_OPENAI_*`).</li>
+                </ol>
+            </div>
+            <div style="border:1px solid #ced6e4;border-radius:10px;padding:12px;background:#fff;">
+                <h3 style="margin-top:0;">Azure Deploy Flow</h3>
+                <ol style="margin:0;padding-left:18px;">
+                    <li>Generate and save code in a chat session.</li>
+                    <li>Open session <strong>Publish</strong> page.</li>
+                    <li>Choose <strong>Deployment using zip</strong> or <strong>Deployment using GitHub</strong>.</li>
+                    <li>Provide Subscription ID, RG, Plan, Web App Name, Region.</li>
+                    <li>Submit publish and track job status until URL is returned.</li>
+                </ol>
+            </div>
+        </div>
+        <div style="margin-top:12px;border:1px solid #e6c2b8;border-radius:10px;padding:12px;background:#fff7f4;color:#8f2a13;">
             <h3 style="margin-top:0;">Azure App Service Mode</h3>
-            <p style="margin:0;">coming soon.. currently this website only works on with vs code mode</p>
+            <p style="margin:0;">Use this mode when your app service identity and permissions are configured.</p>
         </div>
     {% endif %}
 </section>

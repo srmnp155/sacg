@@ -1,6 +1,7 @@
 from django.urls import path
 from django.contrib.auth import views as auth_views
 
+from .forms import LoginForm
 from .views import (
     chat_api,
     chat_page,
@@ -26,7 +27,11 @@ from .views import (
 urlpatterns = [
     path("", home_page, name="home_page"),
     path("signup/", signup_page, name="signup_page"),
-    path("login/", auth_views.LoginView.as_view(template_name="chatbot/login.html"), name="login"),
+    path(
+        "login/",
+        auth_views.LoginView.as_view(template_name="chatbot/login.html", authentication_form=LoginForm),
+        name="login",
+    ),
     path("logout/", auth_views.LogoutView.as_view(next_page="home_page"), name="logout"),
     path("profile/", profile_page, name="profile_page"),
     path("settings/", user_settings_page, name="user_settings_page"),

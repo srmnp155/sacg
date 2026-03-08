@@ -7,6 +7,11 @@
     <h2>Login</h2>
     <form method="post">
         {% csrf_token %}
+        {% if form.non_field_errors %}
+            <div style="color:#9f3919;font-size:0.9rem;margin-bottom:10px;">
+                {{ form.non_field_errors|striptags }}
+            </div>
+        {% endif %}
         {% for field in form %}
             <div class="form-row">
                 {{ field.label_tag }}
@@ -22,4 +27,9 @@
         <a href="{% url 'password_reset' %}">Forgot password?</a>
     </p>
 </section>
+{% if form.non_field_errors %}
+<script>
+    alert("Incorrect username/email or password. Please try again.");
+</script>
+{% endif %}
 {% endblock %}

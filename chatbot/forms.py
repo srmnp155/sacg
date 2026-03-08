@@ -1,4 +1,5 @@
 from django import forms
+from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.models import User
 
@@ -60,3 +61,23 @@ class ProfileForm(forms.ModelForm):
             profile.save()
 
         return profile
+
+
+class LoginForm(AuthenticationForm):
+    username = forms.CharField(
+        label="Username or Email",
+        max_length=254,
+        widget=forms.TextInput(attrs={"autofocus": True}),
+    )
+
+    def clean(self):
+        username_or_email = str(self.cleaned_data.get("username") or "").strip()
+        password = self.cleaned_data.get("password")
+        if "@" in username_or_email:
+            user = User.objects.filter(email__iexact=username_or_email).first()
+            if user:
+                self.cleaned_data["username"] = user.username
+        else:
+            self.cleaned_data["username"] = username_or_email
+        self.cleaned_data["password"] = password
+        return super().clean()
