@@ -164,6 +164,10 @@
                             <input type="radio" name="az_deploy_mode" value="external_git">
                             Deployment using GitHub
                         </label>
+                        <label class="mode-chip">
+                            <input type="radio" name="az_deploy_mode" value="swa_publish">
+                            Deployment using SWA (GitHub)
+                        </label>
                     </div>
                 </div>
 
@@ -180,47 +184,62 @@
                     </div>
                 </div>
 
-                <div class="field">
-                    <label for="az_subscription_id">Subscription ID</label>
-                    <input id="az_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required>
-                </div>
-                <div class="grid-two">
-                    <div class="field">
-                        <label for="az_resource_group">Resource Group</label>
-                        <input id="az_resource_group" type="text" placeholder="srm-rg" required>
-                    </div>
-                    <div class="field">
-                        <label for="az_plan">App Service Plan</label>
-                        <input id="az_plan" type="text" placeholder="srm-plan" required>
+                <div id="azure-swa-fields" style="display:none;">
+                    <div class="grid-two">
+                        <div class="field">
+                            <label for="az_swa_name">Static Web App Name (optional)</label>
+                            <input id="az_swa_name" type="text" placeholder="my-static-web-app">
+                        </div>
+                        <div class="field">
+                            <label for="az_swa_url">Static Web App URL (optional)</label>
+                            <input id="az_swa_url" type="text" placeholder="https://<name>.azurestaticapps.net">
+                        </div>
                     </div>
                 </div>
-                <div class="grid-two">
+
+                <div id="azure-appservice-fields">
                     <div class="field">
-                        <label for="az_webapp">Web App Name</label>
-                        <input id="az_webapp" type="text" placeholder="myapp-unique-name" required>
+                        <label for="az_subscription_id">Subscription ID</label>
+                        <input id="az_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                    </div>
+                    <div class="grid-two">
+                        <div class="field">
+                            <label for="az_resource_group">Resource Group</label>
+                            <input id="az_resource_group" type="text" placeholder="srm-rg">
+                        </div>
+                        <div class="field">
+                            <label for="az_plan">App Service Plan</label>
+                            <input id="az_plan" type="text" placeholder="srm-plan">
+                        </div>
+                    </div>
+                    <div class="grid-two">
+                        <div class="field">
+                            <label for="az_webapp">Web App Name</label>
+                            <input id="az_webapp" type="text" placeholder="myapp-unique-name">
+                        </div>
+                        <div class="field">
+                            <label for="az_region">Region</label>
+                            <input id="az_region" type="text" value="centralindia">
+                        </div>
+                    </div>
+                    <div class="grid-two">
+                        <div class="field">
+                            <label for="az_runtime">Runtime</label>
+                            <input id="az_runtime" type="text" value="{{ detected_runtime|default:'PYTHON:3.11' }}">
+                            <small style="display:block;margin-top:4px;color:#5c6b80;">Auto-detected from generated code. You can edit if needed.</small>
+                        </div>
+                        <div class="field">
+                            <label for="az_startup">Startup Command (optional)</label>
+                            <input id="az_startup" type="text" value="{{ detected_startup_command|default:'' }}" placeholder="Auto-detected if empty">
+                            <small style="display:block;margin-top:4px;color:#5c6b80;">Auto-detected from generated code. You can edit if needed.</small>
+                        </div>
                     </div>
                     <div class="field">
-                        <label for="az_region">Region</label>
-                        <input id="az_region" type="text" value="centralindia">
+                        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                            <input id="az_auto_create" type="checkbox">
+                            Auto-create Resource Group, Plan, and Web App
+                        </label>
                     </div>
-                </div>
-                <div class="grid-two">
-                    <div class="field">
-                        <label for="az_runtime">Runtime</label>
-                        <input id="az_runtime" type="text" value="{{ detected_runtime|default:'PYTHON:3.11' }}">
-                        <small style="display:block;margin-top:4px;color:#5c6b80;">Auto-detected from generated code. You can edit if needed.</small>
-                    </div>
-                    <div class="field">
-                        <label for="az_startup">Startup Command (optional)</label>
-                        <input id="az_startup" type="text" value="{{ detected_startup_command|default:'' }}" placeholder="Auto-detected if empty">
-                        <small style="display:block;margin-top:4px;color:#5c6b80;">Auto-detected from generated code. You can edit if needed.</small>
-                    </div>
-                </div>
-                <div class="field">
-                    <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-                        <input id="az_auto_create" type="checkbox">
-                        Auto-create Resource Group, Plan, and Web App
-                    </label>
                 </div>
                 <button class="button" type="submit">Publish to Azure</button>
                 <div class="status" id="azure-status"></div>
@@ -261,6 +280,8 @@
     const azureForm = document.getElementById("azure-form");
     const azureStatus = document.getElementById("azure-status");
     const azureGitFields = document.getElementById("azure-git-fields");
+    const azureSwaFields = document.getElementById("azure-swa-fields");
+    const azureAppServiceFields = document.getElementById("azure-appservice-fields");
     const azureRepoUrl = document.getElementById("az_repo_url");
     const azureRepoBranch = document.getElementById("az_repo_branch");
 
@@ -272,9 +293,21 @@
     const refreshAzureMode = () => {
         const mode = getAzureMode();
         const isGit = mode !== "zip";
+        const isSwa = mode === "swa_publish";
+        const appServiceRequired = !isSwa;
         if (azureGitFields) azureGitFields.style.display = isGit ? "block" : "none";
+        if (azureSwaFields) azureSwaFields.style.display = isSwa ? "block" : "none";
+        if (azureAppServiceFields) azureAppServiceFields.style.display = appServiceRequired ? "block" : "none";
         if (azureRepoUrl) azureRepoUrl.required = isGit;
         if (azureRepoBranch) azureRepoBranch.required = isGit;
+        const setReq = (id, req) => {
+            const el = document.getElementById(id);
+            if (el) el.required = req;
+        };
+        setReq("az_subscription_id", appServiceRequired);
+        setReq("az_resource_group", appServiceRequired);
+        setReq("az_plan", appServiceRequired);
+        setReq("az_webapp", appServiceRequired);
     };
 
     document.querySelectorAll("input[name='az_deploy_mode']").forEach((radio) => {
@@ -358,6 +391,8 @@
                 auto_create: document.getElementById("az_auto_create").checked,
                 repo_url: (azureRepoUrl && azureRepoUrl.value ? azureRepoUrl.value.trim() : ""),
                 repo_branch: (azureRepoBranch && azureRepoBranch.value ? azureRepoBranch.value.trim() : "main"),
+                static_web_app_name: (document.getElementById("az_swa_name")?.value || "").trim(),
+                swa_url: (document.getElementById("az_swa_url")?.value || "").trim(),
             };
 
             try {

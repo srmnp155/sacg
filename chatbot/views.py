@@ -638,6 +638,32 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
     if DefaultAzureCredential is None:
         raise RuntimeError("azure-identity is missing. Install dependencies and redeploy.")
 
+    deployment_mode = str(job_payload.get("deployment_mode") or "zip").strip().lower()
+    repo_url = str(job_payload.get("repo_url") or "").strip()
+    repo_branch = str(job_payload.get("repo_branch") or "").strip() or "main"
+    static_web_app_name = str(job_payload.get("static_web_app_name") or "").strip()
+    swa_url = str(job_payload.get("swa_url") or "").strip()
+
+    if deployment_mode == "swa_publish":
+        if not repo_url:
+            return {"ok": False, "error": "repo_url is required for SWA publish mode.", "logs": []}
+        logs = [
+            "SWA publish mode selected.",
+            f"Repository source: {repo_url} (branch: {repo_branch})",
+            "Assuming Azure Static Web Apps is already linked to this repository and branch.",
+            "Push new commits to trigger Static Web Apps deployment workflow.",
+        ]
+        if static_web_app_name:
+            logs.append(f"Static Web App name: {static_web_app_name}")
+        if swa_url:
+            logs.append(f"Static Web App URL: {swa_url}")
+        return {
+            "ok": True,
+            "app_url": swa_url or repo_url,
+            "logs": logs,
+            "message": "SWA publish configured. GitHub push will trigger deployment if repo linkage exists.",
+        }
+
     subscription_id = str(job_payload.get("subscription_id") or "").strip()
     resource_group = str(job_payload.get("resource_group") or "").strip()
     plan_name = str(job_payload.get("app_service_plan") or "").strip()
@@ -646,9 +672,6 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
     runtime = str(job_payload.get("runtime") or "").strip() or "PYTHON:3.11"
     startup_command = str(job_payload.get("startup_command") or "").strip()
     auto_create = bool(job_payload.get("auto_create", False))
-    deployment_mode = str(job_payload.get("deployment_mode") or "zip").strip().lower()
-    repo_url = str(job_payload.get("repo_url") or "").strip()
-    repo_branch = str(job_payload.get("repo_branch") or "").strip() or "main"
 
     required = {
         "subscription_id": subscription_id,
@@ -812,10 +835,10 @@ def publish_session_to_azure(request, session_id: int):
     repo_url = str(payload.get("repo_url") or "").strip()
     repo_branch = str(payload.get("repo_branch") or "").strip() or "main"
 
-    valid_modes = {"zip", "external_git"}
+    valid_modes = {"zip", "external_git", "swa_publish"}
     if deployment_mode not in valid_modes:
         return JsonResponse({"error": "Invalid deployment mode."}, status=400)
-    if deployment_mode == "external_git" and not repo_url:
+    if deployment_mode in {"external_git", "swa_publish"} and not repo_url:
         return JsonResponse({"error": "repo_url is required for git deployment modes."}, status=400)
 
     job_payload = {
@@ -830,6 +853,8 @@ def publish_session_to_azure(request, session_id: int):
         "auto_create": auto_create,
         "repo_url": repo_url,
         "repo_branch": repo_branch,
+        "static_web_app_name": str(payload.get("static_web_app_name") or "").strip(),
+        "swa_url": str(payload.get("swa_url") or "").strip(),
     }
 
     try:
@@ -856,7 +881,7 @@ def start_publish_job(request, session_id: int):
         return JsonResponse({"error": "Invalid JSON payload."}, status=400)
 
     deployment_mode = str(payload.get("deployment_mode") or "zip").strip().lower()
-    if deployment_mode not in {"zip", "external_git"}:
+    if deployment_mode not in {"zip", "external_git", "swa_publish"}:
         return JsonResponse({"error": "Invalid deployment mode."}, status=400)
 
     job_payload = {
@@ -872,6 +897,8 @@ def start_publish_job(request, session_id: int):
         "auto_create": bool(payload.get("auto_create", False)),
         "repo_url": str(payload.get("repo_url") or "").strip(),
         "repo_branch": str(payload.get("repo_branch") or "").strip() or "main",
+        "static_web_app_name": str(payload.get("static_web_app_name") or "").strip(),
+        "swa_url": str(payload.get("swa_url") or "").strip(),
         "subscription_id": str(payload.get("subscription_id") or "").strip(),
     }
     if not job_payload["startup_command"]:
