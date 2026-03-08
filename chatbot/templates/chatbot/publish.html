@@ -195,6 +195,28 @@
                             <input id="az_swa_url" type="text" placeholder="https://<name>.azurestaticapps.net">
                         </div>
                     </div>
+                    <div class="grid-two">
+                        <div class="field">
+                            <label for="az_swa_subscription_id">Subscription ID (for create)</label>
+                            <input id="az_swa_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                        </div>
+                        <div class="field">
+                            <label for="az_swa_resource_group">Resource Group (for create)</label>
+                            <input id="az_swa_resource_group" type="text" placeholder="srm-rg">
+                        </div>
+                    </div>
+                    <div class="grid-two">
+                        <div class="field">
+                            <label for="az_swa_region">Region</label>
+                            <input id="az_swa_region" type="text" value="centralindia">
+                        </div>
+                        <div class="field" style="display:flex;align-items:end;">
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                                <input id="az_swa_auto_create" type="checkbox">
+                                Auto-create Static Web App if missing
+                            </label>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="azure-appservice-fields">
@@ -379,20 +401,30 @@
             azureStatus.textContent = "Publishing to Azure... this can take a few minutes.";
 
             const deploymentMode = getAzureMode();
+            const isSwa = deploymentMode === "swa_publish";
             const payload = {
                 deployment_mode: deploymentMode,
-                subscription_id: document.getElementById("az_subscription_id").value.trim(),
-                resource_group: document.getElementById("az_resource_group").value.trim(),
+                subscription_id: isSwa
+                    ? ((document.getElementById("az_swa_subscription_id")?.value || "").trim())
+                    : document.getElementById("az_subscription_id").value.trim(),
+                resource_group: isSwa
+                    ? ((document.getElementById("az_swa_resource_group")?.value || "").trim())
+                    : document.getElementById("az_resource_group").value.trim(),
                 app_service_plan: document.getElementById("az_plan").value.trim(),
                 webapp_name: document.getElementById("az_webapp").value.trim(),
-                region: document.getElementById("az_region").value.trim(),
+                region: isSwa
+                    ? ((document.getElementById("az_swa_region")?.value || "").trim())
+                    : document.getElementById("az_region").value.trim(),
                 runtime: document.getElementById("az_runtime").value.trim(),
                 startup_command: document.getElementById("az_startup").value.trim(),
-                auto_create: document.getElementById("az_auto_create").checked,
+                auto_create: isSwa
+                    ? !!document.getElementById("az_swa_auto_create")?.checked
+                    : document.getElementById("az_auto_create").checked,
                 repo_url: (azureRepoUrl && azureRepoUrl.value ? azureRepoUrl.value.trim() : ""),
                 repo_branch: (azureRepoBranch && azureRepoBranch.value ? azureRepoBranch.value.trim() : "main"),
                 static_web_app_name: (document.getElementById("az_swa_name")?.value || "").trim(),
                 swa_url: (document.getElementById("az_swa_url")?.value || "").trim(),
+                swa_auto_create: !!document.getElementById("az_swa_auto_create")?.checked,
             };
 
             try {

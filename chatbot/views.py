@@ -643,23 +643,57 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
     repo_branch = str(job_payload.get("repo_branch") or "").strip() or "main"
     static_web_app_name = str(job_payload.get("static_web_app_name") or "").strip()
     swa_url = str(job_payload.get("swa_url") or "").strip()
+    swa_auto_create = bool(job_payload.get("swa_auto_create", False))
 
     if deployment_mode == "swa_publish":
         if not repo_url:
             return {"ok": False, "error": "repo_url is required for SWA publish mode.", "logs": []}
-        logs = [
+        logs: list[str] = [
             "SWA publish mode selected.",
             f"Repository source: {repo_url} (branch: {repo_branch})",
-            "Assuming Azure Static Web Apps is already linked to this repository and branch.",
-            "Push new commits to trigger Static Web Apps deployment workflow.",
         ]
+        app_url = swa_url or ""
+        if swa_auto_create:
+            subscription_id = str(job_payload.get("subscription_id") or "").strip()
+            resource_group = str(job_payload.get("resource_group") or "").strip()
+            region = str(job_payload.get("region") or "").strip() or "centralindia"
+            if not subscription_id or not resource_group or not static_web_app_name:
+                return {
+                    "ok": False,
+                    "error": "For SWA auto-create, provide subscription_id, resource_group, and static_web_app_name.",
+                    "logs": logs,
+                }
+            credential = DefaultAzureCredential()
+            token = credential.get_token("https://management.azure.com/.default").token
+            api_version = "2022-09-01"
+            base = f"https://management.azure.com/subscriptions/{subscription_id}"
+            rg_url = f"{base}/resourcegroups/{resource_group}?api-version=2023-07-01"
+            _arm_request("PUT", rg_url, token, {"location": region})
+            logs.append(f"Resource group ensured: {resource_group}")
+
+            swa_url_api = (
+                f"{base}/resourceGroups/{resource_group}/providers/Microsoft.Web/"
+                f"staticSites/{static_web_app_name}?api-version={api_version}"
+            )
+            swa_payload = {"location": region, "sku": {"name": "Free", "tier": "Free"}}
+            response = _arm_request("PUT", swa_url_api, token, swa_payload, timeout=900)
+            default_hostname = (
+                ((response or {}).get("properties") or {}).get("defaultHostname")
+                if isinstance(response, dict)
+                else ""
+            )
+            if default_hostname and not app_url:
+                app_url = f"https://{default_hostname}"
+            logs.append(f"Static Web App ensured: {static_web_app_name}")
+        logs.append("Assuming Azure Static Web Apps is linked to this repository and branch.")
+        logs.append("Push new commits to trigger Static Web Apps deployment workflow.")
         if static_web_app_name:
             logs.append(f"Static Web App name: {static_web_app_name}")
-        if swa_url:
-            logs.append(f"Static Web App URL: {swa_url}")
+        if app_url:
+            logs.append(f"Static Web App URL: {app_url}")
         return {
             "ok": True,
-            "app_url": swa_url or repo_url,
+            "app_url": app_url or repo_url,
             "logs": logs,
             "message": "SWA publish configured. GitHub push will trigger deployment if repo linkage exists.",
         }
@@ -855,6 +889,7 @@ def publish_session_to_azure(request, session_id: int):
         "repo_branch": repo_branch,
         "static_web_app_name": str(payload.get("static_web_app_name") or "").strip(),
         "swa_url": str(payload.get("swa_url") or "").strip(),
+        "swa_auto_create": bool(payload.get("swa_auto_create", False)),
     }
 
     try:
@@ -899,6 +934,7 @@ def start_publish_job(request, session_id: int):
         "repo_branch": str(payload.get("repo_branch") or "").strip() or "main",
         "static_web_app_name": str(payload.get("static_web_app_name") or "").strip(),
         "swa_url": str(payload.get("swa_url") or "").strip(),
+        "swa_auto_create": bool(payload.get("swa_auto_create", False)),
         "subscription_id": str(payload.get("subscription_id") or "").strip(),
     }
     if not job_payload["startup_command"]:
