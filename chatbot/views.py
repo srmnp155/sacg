@@ -3,9 +3,6 @@ import io
 import hashlib
 import random
 import re
-import shutil
-import subprocess
-import sys
 import tempfile
 import zipfile
 import base64
@@ -539,6 +536,36 @@ def _detect_runtime_from_project(project: GeneratedProject | None) -> str:
     return "PYTHON:3.11"
 
 
+def _detect_startup_command_from_project(project: GeneratedProject | None, runtime: str) -> str:
+    if not project or not isinstance(project.files, list):
+        return ""
+
+    paths = [str(item.get("path", "")).strip().lower() for item in project.files if str(item.get("path", "")).strip()]
+    runtime_upper = (runtime or "").strip().upper()
+
+    if runtime_upper.startswith("PYTHON"):
+        if "manage.py" in paths:
+            return "gunicorn chatbot_project.wsgi --bind=0.0.0.0:$PORT --timeout 600"
+        if "app.py" in paths:
+            return "gunicorn app:app --bind=0.0.0.0:$PORT --timeout 600"
+        if "main.py" in paths:
+            return "gunicorn main:app --bind=0.0.0.0:$PORT --timeout 600"
+        return "gunicorn app:app --bind=0.0.0.0:$PORT --timeout 600"
+
+    if runtime_upper.startswith("NODE"):
+        if "package.json" in paths:
+            return "npm start"
+        if "server.js" in paths:
+            return "node server.js"
+        if "app.js" in paths:
+            return "node app.js"
+        if "main.js" in paths:
+            return "node main.js"
+        return "npm start"
+
+    return ""
+
+
 @login_required
 def download_session_project(request, session_id: int):
     session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
@@ -552,28 +579,19 @@ def download_session_project(request, session_id: int):
 def session_publish_page(request, session_id: int):
     session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
     project = session.generated_projects.order_by("-created_at").first()
+    detected_runtime = _detect_runtime_from_project(project)
     return render(
         request,
         "chatbot/publish.html",
         {
             "session": session,
             "project": project,
-            "detected_runtime": _detect_runtime_from_project(project),
+            "detected_runtime": detected_runtime,
+            "detected_startup_command": _detect_startup_command_from_project(project, detected_runtime),
             "download_url": reverse("download_session_project", args=[session.id]) if project else "",
             "test_url": reverse("session_test_ide", args=[session.id]) if project else "",
         },
     )
-
-
-def _run_process(command: list[str], timeout: int = 300) -> tuple[int, str]:
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    out = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-    return completed.returncode, out
 
 
 def _runtime_to_linux_fx_version(runtime: str) -> str:
@@ -786,7 +804,9 @@ def publish_session_to_azure(request, session_id: int):
     webapp_name = str(payload.get("webapp_name") or "").strip()
     region = str(payload.get("region") or "").strip() or "centralindia"
     runtime = str(payload.get("runtime") or "").strip() or _detect_runtime_from_project(project)
-    startup_command = str(payload.get("startup_command") or "").strip()
+    startup_command = str(payload.get("startup_command") or "").strip() or _detect_startup_command_from_project(
+        project, runtime
+    )
     auto_create = bool(payload.get("auto_create", False))
     deployment_mode = str(payload.get("deployment_mode") or "zip").strip().lower()
     repo_url = str(payload.get("repo_url") or "").strip()
@@ -854,6 +874,8 @@ def start_publish_job(request, session_id: int):
         "repo_branch": str(payload.get("repo_branch") or "").strip() or "main",
         "subscription_id": str(payload.get("subscription_id") or "").strip(),
     }
+    if not job_payload["startup_command"]:
+        job_payload["startup_command"] = _detect_startup_command_from_project(project, job_payload["runtime"])
 
     job = PublishJob.objects.create(
         user=request.user,
@@ -895,13 +917,6 @@ def publish_job_status(request, job_id):
 
     job = get_object_or_404(PublishJob, pk=job_id, user=request.user)
     return JsonResponse({"ok": True, "job": _publish_job_json(job)})
-
-
-def _find_cmd(candidates: tuple[str, ...]) -> str | None:
-    for cmd in candidates:
-        if shutil.which(cmd):
-            return cmd
-    return None
 
 
 def _github_request(

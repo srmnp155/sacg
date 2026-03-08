@@ -212,7 +212,8 @@
                     </div>
                     <div class="field">
                         <label for="az_startup">Startup Command (optional)</label>
-                        <input id="az_startup" type="text" placeholder="gunicorn app:app --bind=0.0.0.0:\$PORT">
+                        <input id="az_startup" type="text" value="{{ detected_startup_command|default:'' }}" placeholder="Auto-detected if empty">
+                        <small style="display:block;margin-top:4px;color:#5c6b80;">Auto-detected from generated code. You can edit if needed.</small>
                     </div>
                 </div>
                 <div class="field">
