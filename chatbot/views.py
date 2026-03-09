@@ -135,11 +135,9 @@ def set_deployment_mode(request):
 @login_required
 def chat_page(request):
     profile, _ = UserProfile.objects.get_or_create(user=request.user)
-    sessions = list(
-        ChatSession.objects.filter(user=request.user).prefetch_related("messages", "generated_projects")
-    )
+    sessions = list(ChatSession.objects.filter(user=request.user).prefetch_related("messages"))
     for session in sessions:
-        latest_project = next(iter(session.generated_projects.all()), None)
+        latest_project = session.generated_projects.order_by("-created_at").first()
         session.latest_project_id = latest_project.id if latest_project else None
         session.session_download_url = (
             reverse("download_session_project", args=[session.id]) if latest_project else ""
@@ -327,6 +325,30 @@ def _is_project_update_request(message: str) -> bool:
         "file",
         "folder",
         "path",
+        "project",
+        "app",
+        "codebase",
+        "code",
+        "feature",
+        "function",
+        "module",
+        "component",
+        "ui",
+        "ux",
+        "screen",
+        "page",
+        "view",
+        "button",
+        "header",
+        "footer",
+        "login",
+        "signup",
+        "profile",
+        "api",
+        "endpoint",
+        "database",
+        "model",
+        "schema",
         ".py",
         ".js",
         ".ts",
