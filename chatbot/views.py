@@ -606,6 +606,70 @@ def _runtime_to_linux_fx_version(runtime: str) -> str:
     return f"PYTHON|{raw}"
 
 
+def _detect_swa_build_properties(project: GeneratedProject | None) -> dict:
+    if not project or not isinstance(project.files, list):
+        return {
+            "appLocation": "/",
+            "apiLocation": "",
+            "appArtifactLocation": "",
+        }
+
+    files = project.files
+    raw_paths = [str(item.get("path", "")).strip() for item in files if str(item.get("path", "")).strip()]
+    paths = set(raw_paths)
+
+    # If all files are under one top-level folder, treat it as appLocation.
+    # This avoids SWA looking at repo root when generated code is nested.
+    root_level_files = [p for p in raw_paths if "/" not in p]
+    top_dirs = {p.split("/", 1)[0] for p in raw_paths if "/" in p}
+    app_root = ""
+    if not root_level_files and len(top_dirs) == 1:
+        app_root = next(iter(top_dirs))
+
+    app_location = "/" if not app_root else f"/{app_root}"
+
+    def trim_root(path: str) -> str:
+        if not app_root:
+            return path
+        prefix = f"{app_root}/"
+        return path[len(prefix) :] if path.startswith(prefix) else path
+
+    trimmed_paths = {trim_root(p) for p in paths}
+    package_json = next(
+        (
+            item
+            for item in files
+            if trim_root(str(item.get("path", "")).strip()) == "package.json"
+        ),
+        None,
+    )
+
+    app_build_command = ""
+    app_artifact_location = ""
+    if package_json:
+        try:
+            package_data = json.loads(str(package_json.get("content", "") or "{}"))
+            scripts = package_data.get("scripts") if isinstance(package_data, dict) else {}
+            if isinstance(scripts, dict) and "build" in scripts:
+                app_build_command = "npm run build"
+        except (ValueError, TypeError):
+            pass
+
+    if any(path.startswith("dist/") for path in trimmed_paths):
+        app_artifact_location = "dist"
+    elif any(path.startswith("build/") for path in trimmed_paths):
+        app_artifact_location = "build"
+
+    props = {
+        "appLocation": app_location,
+        "apiLocation": "",
+        "appArtifactLocation": app_artifact_location,
+    }
+    if app_build_command:
+        props["appBuildCommand"] = app_build_command
+    return props
+
+
 def _arm_request(
     method: str,
     url: str,
@@ -634,7 +698,11 @@ def _arm_request(
         raise RuntimeError(f"{method} {url} failed with {exc.code}: {error_text[:600]}")
 
 
-def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: dict) -> dict:
+def _run_publish_via_managed_identity(
+    project: GeneratedProject,
+    job_payload: dict,
+    github_token: str = "",
+) -> dict:
     if DefaultAzureCredential is None:
         raise RuntimeError("azure-identity is missing. Install dependencies and redeploy.")
 
@@ -663,6 +731,14 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
                     "error": "For SWA auto-create, provide subscription_id, resource_group, and static_web_app_name.",
                     "logs": logs,
                 }
+            if not github_token:
+                return {
+                    "ok": False,
+                    "error": (
+                        "GitHub token missing in profile. Add GitHub token in Profile to link SWA with your repo."
+                    ),
+                    "logs": logs,
+                }
             credential = DefaultAzureCredential()
             token = credential.get_token("https://management.azure.com/.default").token
             api_version = "2022-09-01"
@@ -682,8 +758,10 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
                     "repositoryUrl": repo_url,
                     "branch": repo_branch,
                     "provider": "GitHub",
+                    "repositoryToken": github_token,
                     "stagingEnvironmentPolicy": "Enabled",
                     "allowConfigFileUpdates": True,
+                    "buildProperties": _detect_swa_build_properties(project),
                 },
             }
             response = _arm_request("PUT", swa_url_api, token, swa_payload, timeout=900)
@@ -695,6 +773,9 @@ def _run_publish_via_managed_identity(project: GeneratedProject, job_payload: di
             if default_hostname and not app_url:
                 app_url = f"https://{default_hostname}"
             logs.append(f"Static Web App ensured: {static_web_app_name}")
+            if app_url:
+                logs.append(f"SWA endpoint: {app_url}")
+            logs.append("SWA linked with GitHub repository using repository token.")
         logs.append("Assuming Azure Static Web Apps is linked to this repository and branch.")
         logs.append("Push new commits to trigger Static Web Apps deployment workflow.")
         if static_web_app_name:
@@ -901,9 +982,11 @@ def publish_session_to_azure(request, session_id: int):
         "swa_url": str(payload.get("swa_url") or "").strip(),
         "swa_auto_create": bool(payload.get("swa_auto_create", False)),
     }
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    github_token = str(profile.github_token or "").strip()
 
     try:
-        result = _run_publish_via_managed_identity(project, job_payload)
+        result = _run_publish_via_managed_identity(project, job_payload, github_token=github_token)
         status = 200 if result.get("ok") else 502
         return JsonResponse(result, status=status)
     except Exception as exc:
@@ -949,6 +1032,8 @@ def start_publish_job(request, session_id: int):
     }
     if not job_payload["startup_command"]:
         job_payload["startup_command"] = _detect_startup_command_from_project(project, job_payload["runtime"])
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    github_token = str(profile.github_token or "").strip()
 
     job = PublishJob.objects.create(
         user=request.user,
@@ -963,7 +1048,7 @@ def start_publish_job(request, session_id: int):
     job.logs = "Managed identity publish started from Django."
     job.save(update_fields=["status", "logs", "updated_at"])
     try:
-        result = _run_publish_via_managed_identity(project, job_payload)
+        result = _run_publish_via_managed_identity(project, job_payload, github_token=github_token)
         result_logs = result.get("logs", [])
         if result_logs:
             job.logs = f"{job.logs}\n" + "\n".join(str(line) for line in result_logs)

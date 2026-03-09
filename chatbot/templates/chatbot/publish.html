@@ -350,6 +350,7 @@
                 const pushRequest = async (overwrite = false) => {
                     const response = await fetch("{% url 'push_session_to_github' session.id %}", {
                         method: "POST",
+                        credentials: "same-origin",
                         headers: {
                             "X-CSRFToken": getCookie("csrftoken"),
                             "Content-Type": "application/json",
@@ -439,6 +440,7 @@
                     const pushRequest = async (overwrite = false) => {
                         const response = await fetch("{% url 'push_session_to_github' session.id %}", {
                             method: "POST",
+                            credentials: "same-origin",
                             headers: {
                                 "X-CSRFToken": getCookie("csrftoken"),
                                 "Content-Type": "application/json",
@@ -482,6 +484,7 @@
                 azureStatus.textContent = "Creating publish job...";
                 const response = await fetch("{% url 'start_publish_job' session.id %}", {
                     method: "POST",
+                    credentials: "same-origin",
                     headers: {
                         "X-CSRFToken": getCookie("csrftoken"),
                         "Content-Type": "application/json",
@@ -508,6 +511,7 @@
                 const pollStatus = async () => {
                     const statusResp = await fetch(`/publish/jobs/${jobId}/status/`, {
                         method: "GET",
+                        credentials: "same-origin",
                         headers: {
                             "X-CSRFToken": getCookie("csrftoken"),
                             "Accept": "application/json",
@@ -515,6 +519,16 @@
                     });
                     const { data: statusData, raw: statusRaw } = await parseJsonSafely(statusResp);
                     if (!statusData) {
+                        if (statusResp.redirected && String(statusResp.url || "").includes("/login")) {
+                            azureStatus.textContent = "Session expired. Please login again and retry publish.";
+                            return true;
+                        }
+                        if (String(statusRaw || "").toLowerCase().includes("<!doctype html")) {
+                            azureStatus.textContent =
+                                "Publish status returned HTML instead of JSON. " +
+                                "Please refresh page and ensure you are logged in, then retry.";
+                            return true;
+                        }
                         if ([502, 503, 504].includes(statusResp.status)) {
                             azureStatus.textContent =
                                 `${azureStatus.textContent}\n\nTemporary server issue (HTTP ${statusResp.status}). Retrying...`;
