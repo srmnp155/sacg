@@ -64,6 +64,7 @@
     }
 
     .field input,
+    .field select,
     .field textarea {
         width: 100%;
         padding: 10px;
@@ -198,7 +199,7 @@
                     <div class="grid-two">
                         <div class="field">
                             <label for="az_swa_subscription_id">Subscription ID (for create)</label>
-                            <input id="az_swa_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                            <input id="az_swa_subscription_id" type="text" value="{{ default_subscription_id|default:'' }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
                         </div>
                         <div class="field">
                             <label for="az_swa_resource_group">Resource Group (for create)</label>
@@ -208,7 +209,11 @@
                     <div class="grid-two">
                         <div class="field">
                             <label for="az_swa_region">Region</label>
-                            <input id="az_swa_region" type="text" value="centralindia">
+                            <select id="az_swa_region">
+                                {% for region in azure_region_options %}
+                                    <option value="{{ region }}" {% if region == default_region %}selected{% endif %}>{{ region }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         <div class="field" style="display:flex;align-items:end;">
                             <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
@@ -222,7 +227,7 @@
                 <div id="azure-appservice-fields">
                     <div class="field">
                         <label for="az_subscription_id">Subscription ID</label>
-                        <input id="az_subscription_id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                        <input id="az_subscription_id" type="text" value="{{ default_subscription_id|default:'' }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
                     </div>
                     <div class="grid-two">
                         <div class="field">
@@ -241,7 +246,11 @@
                         </div>
                         <div class="field">
                             <label for="az_region">Region</label>
-                            <input id="az_region" type="text" value="centralindia">
+                            <select id="az_region">
+                                {% for region in azure_region_options %}
+                                    <option value="{{ region }}" {% if region == default_region %}selected{% endif %}>{{ region }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                     </div>
                     <div class="grid-two">

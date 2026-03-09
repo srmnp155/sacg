@@ -30,6 +30,22 @@ from .models import ChatMessage, ChatSession, GeneratedProject, PublishJob, User
 
 MAX_FILES_PER_PROJECT = 40
 GITHUB_API_BASE = "https://api.github.com"
+AZURE_REGION_OPTIONS = [
+    "centralindia",
+    "eastus",
+    "eastus2",
+    "westus",
+    "westus2",
+    "northcentralus",
+    "southcentralus",
+    "westeurope",
+    "northeurope",
+    "southeastasia",
+    "eastasia",
+    "australiaeast",
+    "japaneast",
+    "uksouth",
+]
 
 
 def home_page(request):
@@ -602,6 +618,11 @@ def session_publish_page(request, session_id: int):
     session = get_object_or_404(ChatSession, pk=session_id, user=request.user)
     project = session.generated_projects.order_by("-created_at").first()
     detected_runtime = _detect_runtime_from_project(project)
+    default_region = settings.AZURE_DEFAULT_REGION or "centralindia"
+    if default_region not in AZURE_REGION_OPTIONS:
+        region_options = [default_region, *AZURE_REGION_OPTIONS]
+    else:
+        region_options = AZURE_REGION_OPTIONS
     return render(
         request,
         "chatbot/publish.html",
@@ -612,6 +633,9 @@ def session_publish_page(request, session_id: int):
             "detected_startup_command": _detect_startup_command_from_project(project, detected_runtime),
             "download_url": reverse("download_session_project", args=[session.id]) if project else "",
             "test_url": reverse("session_test_ide", args=[session.id]) if project else "",
+            "default_subscription_id": settings.AZURE_SUBSCRIPTION_ID,
+            "default_region": default_region,
+            "azure_region_options": region_options,
         },
     )
 
@@ -968,11 +992,11 @@ def publish_session_to_azure(request, session_id: int):
     except (ValueError, UnicodeDecodeError):
         return JsonResponse({"error": "Invalid JSON payload."}, status=400)
 
-    subscription_id = str(payload.get("subscription_id") or "").strip()
+    subscription_id = str(payload.get("subscription_id") or settings.AZURE_SUBSCRIPTION_ID or "").strip()
     resource_group = str(payload.get("resource_group") or "").strip()
     plan_name = str(payload.get("app_service_plan") or "").strip()
     webapp_name = str(payload.get("webapp_name") or "").strip()
-    region = str(payload.get("region") or "").strip() or "centralindia"
+    region = str(payload.get("region") or settings.AZURE_DEFAULT_REGION or "").strip() or "centralindia"
     runtime = str(payload.get("runtime") or "").strip() or _detect_runtime_from_project(project)
     startup_command = str(payload.get("startup_command") or "").strip() or _detect_startup_command_from_project(
         project, runtime
@@ -1041,7 +1065,7 @@ def start_publish_job(request, session_id: int):
         "resource_group": str(payload.get("resource_group") or "").strip(),
         "app_service_plan": str(payload.get("app_service_plan") or "").strip(),
         "webapp_name": str(payload.get("webapp_name") or "").strip(),
-        "region": str(payload.get("region") or "").strip() or "centralindia",
+        "region": str(payload.get("region") or settings.AZURE_DEFAULT_REGION or "").strip() or "centralindia",
         "runtime": str(payload.get("runtime") or "").strip() or _detect_runtime_from_project(project),
         "startup_command": str(payload.get("startup_command") or "").strip(),
         "auto_create": bool(payload.get("auto_create", False)),
@@ -1050,7 +1074,7 @@ def start_publish_job(request, session_id: int):
         "static_web_app_name": str(payload.get("static_web_app_name") or "").strip(),
         "swa_url": str(payload.get("swa_url") or "").strip(),
         "swa_auto_create": bool(payload.get("swa_auto_create", False)),
-        "subscription_id": str(payload.get("subscription_id") or "").strip(),
+        "subscription_id": str(payload.get("subscription_id") or settings.AZURE_SUBSCRIPTION_ID or "").strip(),
     }
     if not job_payload["startup_command"]:
         job_payload["startup_command"] = _detect_startup_command_from_project(project, job_payload["runtime"])
